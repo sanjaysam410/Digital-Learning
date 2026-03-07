@@ -1,5 +1,8 @@
 {
   "appId": "com.nabha.learning",
   "appName": "nabha",
-  "webDir": "dist"
+  "webDir": "dist",
+  "server": {
+    "cleartext": true
+  }
 }

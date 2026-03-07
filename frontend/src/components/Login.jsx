@@ -23,7 +23,35 @@ export default function Login({ onLogin }) {
             const data = await res.json();
             if (res.ok) { localStorage.setItem('userInfo', JSON.stringify(data)); onLogin(data); }
             else { setError(data.message || 'Something went wrong'); }
-        } catch (err) { setError('Network error. Check your connection.'); }
+        } catch (err) {
+            // --- OFFLINE MODE FALLBACK ---
+            const cachedUser = localStorage.getItem('userInfo') ? JSON.parse(localStorage.getItem('userInfo')) : null;
+
+            // Allow Test Accounts to login offline automatically
+            if (email === 'admin@nabha.edu') {
+                const dummyAdmin = { _id: 'admin1', name: 'System Admin', email, role: 'admin', token: 'offline-token' };
+                localStorage.setItem('userInfo', JSON.stringify(dummyAdmin));
+                onLogin(dummyAdmin);
+            }
+            else if (email === 'teacher@nabha.edu') {
+                const dummyTeacher = { _id: 'teacher1', name: 'Master Ji', email, role: 'teacher', token: 'offline-token' };
+                localStorage.setItem('userInfo', JSON.stringify(dummyTeacher));
+                onLogin(dummyTeacher);
+            }
+            else if (email === 'aarav@student.nabha.edu') {
+                const dummyStudent = { _id: 'student1', name: 'Aarav Kumar', email, role: 'student', token: 'offline-token' };
+                localStorage.setItem('userInfo', JSON.stringify(dummyStudent));
+                onLogin(dummyStudent);
+            }
+            // Allow cached real users to login offline
+            else if (cachedUser && cachedUser.email === email) {
+                onLogin(cachedUser);
+            }
+            // No offline data available
+            else {
+                setError('Device is offline. Please use matching cached account or connect to internet.');
+            }
+        }
         finally { setLoading(false); }
     };
 

@@ -12,6 +12,22 @@ export default function Login({ onLogin }) {
     const [showPassword, setShowPassword] = useState(false);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
+    const [showServerConfig, setShowServerConfig] = useState(false);
+    const [serverUrl, setServerUrl] = useState(localStorage.getItem('serverUrl') || '');
+    const [serverSaved, setServerSaved] = useState(false);
+
+    const handleSaveServer = () => {
+        const trimmed = serverUrl.trim().replace(/\/+$/, '');
+        if (trimmed) {
+            localStorage.setItem('serverUrl', trimmed);
+        } else {
+            localStorage.removeItem('serverUrl');
+        }
+        setServerSaved(true);
+        setTimeout(() => setServerSaved(false), 2000);
+        // Reload so config.js and socket.js pick up the new URL
+        window.location.reload();
+    };
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -21,10 +37,38 @@ export default function Login({ onLogin }) {
         try {
             const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
             const data = await res.json();
-            if (res.ok) { localStorage.setItem('userInfo', JSON.stringify(data)); onLogin(data); }
-            else { setError(data.message || 'Something went wrong'); }
+            if (res.ok) {
+                localStorage.setItem('userInfo', JSON.stringify(data));
+                // Cache this user's credentials locally for offline/fallback login
+                const localUsers = JSON.parse(localStorage.getItem('registeredUsers') || '{}');
+                localUsers[email] = { ...data, password };
+                localStorage.setItem('registeredUsers', JSON.stringify(localUsers));
+                onLogin(data);
+            }
+            else {
+                // Server returned error (e.g. "MongoDB disconnected") — try local cache
+                if (isLogin) {
+                    const localUsers = JSON.parse(localStorage.getItem('registeredUsers') || '{}');
+                    if (localUsers[email] && localUsers[email].password === password) {
+                        const cachedUser = localUsers[email];
+                        localStorage.setItem('userInfo', JSON.stringify(cachedUser));
+                        onLogin(cachedUser);
+                        return;
+                    }
+                }
+                setError(data.message || 'Something went wrong');
+            }
         } catch (err) {
             // --- OFFLINE MODE FALLBACK ---
+            // First check locally registered users
+            const localUsers = JSON.parse(localStorage.getItem('registeredUsers') || '{}');
+            if (localUsers[email] && localUsers[email].password === password) {
+                const cachedUser = localUsers[email];
+                localStorage.setItem('userInfo', JSON.stringify(cachedUser));
+                onLogin(cachedUser);
+                return;
+            }
+
             const cachedUser = localStorage.getItem('userInfo') ? JSON.parse(localStorage.getItem('userInfo')) : null;
 
             // Allow Test Accounts to login offline automatically
@@ -130,6 +174,33 @@ export default function Login({ onLogin }) {
                     <button onClick={() => testLogin('admin')} className="px-4 py-2 border border-emerald-500/30 text-emerald-400 rounded-xl text-xs font-bold hover:bg-emerald-500/10 transition-colors">Test Admin</button>
                     <button onClick={() => testLogin('teacher')} className="px-4 py-2 border border-violet-500/30 text-violet-400 rounded-xl text-xs font-bold hover:bg-violet-500/10 transition-colors">Test Teacher</button>
                     <button onClick={() => testLogin('student')} className="px-4 py-2 border border-indigo-500/30 text-indigo-400 rounded-xl text-xs font-bold hover:bg-indigo-500/10 transition-colors">Test Student</button>
+                </div>
+
+                {/* Server Configuration */}
+                <div className="pt-2">
+                    <button onClick={() => setShowServerConfig(!showServerConfig)} className="w-full text-center text-[11px] text-slate-500 font-semibold hover:text-slate-300 transition-colors">
+                        {showServerConfig ? '▾ Hide Server Settings' : '⚙ Server Settings'}
+                        {localStorage.getItem('serverUrl') && !showServerConfig && <span className="text-emerald-500 ml-1">● Connected</span>}
+                    </button>
+                    {showServerConfig && (
+                        <div className="mt-3 bg-slate-800/50 border border-white/5 rounded-xl p-4 space-y-3">
+                            <p className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">Server URL</p>
+                            <input
+                                type="url"
+                                value={serverUrl}
+                                onChange={e => setServerUrl(e.target.value)}
+                                placeholder="http://192.168.x.x:5001"
+                                className="w-full bg-slate-900 border border-white/10 rounded-xl px-4 py-3 text-white font-semibold text-sm focus:border-indigo-500 outline-none"
+                            />
+                            <p className="text-[10px] text-slate-600 font-semibold">Enter the full URL of your backend server. Both devices must be reachable over the network. Leave empty for localhost (browser default).</p>
+                            <button onClick={handleSaveServer} className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 rounded-xl text-xs font-bold text-white active:scale-95 transition-all">
+                                {serverSaved ? '✓ Saved — Reloading...' : 'Save & Reconnect'}
+                            </button>
+                            {localStorage.getItem('serverUrl') && (
+                                <p className="text-[10px] text-emerald-400 font-semibold text-center">Current: {localStorage.getItem('serverUrl')}</p>
+                            )}
+                        </div>
+                    )}
                 </div>
 
                 {/* Institution Footer */}

@@ -2,22 +2,45 @@ import React, { useState, useEffect, useRef } from 'react';
 import ReactPlayer from 'react-player';
 import socket from '../socket';
 import SyncStatus from './SyncStatus';
-import { API_BASE } from '../config';
+import { API_BASE, SOCKET_URL } from '../config';
+import { saveVideoOffline, getOfflineVideoUrl, getSavedLessonIds, deleteOfflineVideo, getOfflineStorageUsed } from '../offline/videoCache';
 
 const API = API_BASE;
+// Resolve upload paths to the correct server host (handles both relative and old absolute localhost URLs)
+const resolveUrl = (url) => {
+    if (!url) return url;
+    if (url.startsWith('/uploads/')) return `${SOCKET_URL}${url}`;
+    // Fix old absolute URLs that were saved with hardcoded localhost
+    if (url.startsWith('http://localhost:5001/uploads/') || url.startsWith('http://127.0.0.1:5001/uploads/')) {
+        return `${SOCKET_URL}/uploads/${url.split('/uploads/')[1]}`;
+    }
+    return url;
+};
+// Detect direct mp4 video URLs (local, Cloudinary, or any direct file)
+const isDirectVideo = (url) => url && (url.endsWith('.mp4') || url.endsWith('.webm') || url.endsWith('.ogg') || url.includes('cloudinary.com/') || url.includes('/uploads/'));
 
 export default function StudentPortal({ user }) {
     const [activeTab, setActiveTab] = useState('home');
     const [lessons, setLessons] = useState([]);
     const [quizzes, setQuizzes] = useState([]);
-    const [progress, setProgress] = useState(65);
+    const [progress, setProgress] = useState(() => {
+        const saved = localStorage.getItem(`progress_${user?._id}`);
+        return saved ? parseInt(saved) : 0;
+    });
     const [isSaving, setIsSaving] = useState(false);
     const [isOnline, setIsOnline] = useState(navigator.onLine);
     const [onlineCount, setOnlineCount] = useState(0);
+    const [offlineUsageBytes, setOfflineUsageBytes] = useState(null);
 
     // Lesson Viewer State
     const [activeLesson, setActiveLesson] = useState(null);
     const [lessonProgress, setLessonProgress] = useState(0);
+    const [offlineVideoUrl, setOfflineVideoUrl] = useState(null);
+
+    // Offline Video Downloads
+    const [savedLessonIds, setSavedLessonIds] = useState([]);
+    const [downloadingId, setDownloadingId] = useState(null);
+    const [downloadProgress, setDownloadProgress] = useState(0);
 
     // Quiz Runner State
     const [activeQuiz, setActiveQuiz] = useState(null);
@@ -32,18 +55,79 @@ export default function StudentPortal({ user }) {
     const [typingUser, setTypingUser] = useState('');
     const chatEndRef = useRef(null);
 
+    // Notifications
+    const [notifications, setNotifications] = useState([]);
+    const [showNotifications, setShowNotifications] = useState(false);
+
     // Lesson Filter
     const [subjectFilter, setSubjectFilter] = useState('All');
     const [lessonSearch, setLessonSearch] = useState('');
     const [quizFilter, setQuizFilter] = useState('pending');
+    const [completedQuizIds, setCompletedQuizIds] = useState(() => {
+        const saved = localStorage.getItem(`completedQuizzes_${user?._id}`);
+        return saved ? JSON.parse(saved) : [];
+    });
     const [showSubmitModal, setShowSubmitModal] = useState(false);
 
+    // Helper: normalize YouTube URLs for Android WebView compatibility
+    const normalizeYouTubeUrl = (url) => {
+        if (!url) return url;
+        const match = url.match(/youtu\.be\/([a-zA-Z0-9_-]+)/);
+        if (match) return `https://www.youtube.com/watch?v=${match[1]}`;
+        return url;
+    };
+
     useEffect(() => {
+        // Estimate local storage usage (IndexedDB, Cache, etc.) for this origin
+        if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.estimate) {
+            navigator.storage.estimate()
+                .then(({ usage }) => {
+                    if (typeof usage === 'number') {
+                        setOfflineUsageBytes(usage);
+                    }
+                })
+                .catch(() => {
+                    setOfflineUsageBytes(0);
+                });
+        }
+
         socket.emit('join_class', 'class-8a');
         socket.on('presence:online_count', (data) => setOnlineCount(data.count));
-        socket.on('chat:message', (msg) => setChatMessages(prev => [...prev, msg]));
+        // Deduplicate chat messages by _id
+        socket.on('chat:message', (msg) => setChatMessages(prev => {
+            if (prev.some(m => m._id === msg._id)) return prev;
+            return [...prev, msg];
+        }));
         socket.on('chat:typing_indicator', (data) => { setTypingUser(data.name); setTimeout(() => setTypingUser(''), 3000); });
-        socket.on('quiz:started', (data) => { setActiveQuiz(data.quiz); setCurrentQ(0); setAnswers({}); setQuizResult(null); });
+        // Quiz notification from teacher — also add to quiz list
+        socket.on('quiz:started', (data) => {
+            setActiveQuiz(data.quiz); setCurrentQ(0); setAnswers({}); setQuizResult(null);
+            // Add quiz to the quizzes list if not already there
+            if (data.quiz) {
+                setQuizzes(prev => {
+                    if (prev.some(q => q._id === data.quiz._id || q._id === data.quizId)) return prev;
+                    return [data.quiz, ...prev];
+                });
+            }
+        });
+
+        // Real-time notifications — also refresh data when new content is added
+        socket.on('notification:new', (notif) => {
+            setNotifications(prev => [{ ...notif, read: false }, ...prev]);
+            if (notif.type === 'quiz') {
+                fetch(`${API}/quizzes`).then(r => r.json()).then(data => {
+                    if (Array.isArray(data)) setQuizzes(data);
+                }).catch(() => {});
+            }
+            if (notif.type === 'lesson') {
+                fetch(`${API}/lessons`).then(r => r.json()).then(data => {
+                    if (Array.isArray(data)) {
+                        const normalized = data.map(l => ({ ...l, contentUrl: normalizeYouTubeUrl(l.contentUrl) }));
+                        setLessons(normalized);
+                    }
+                }).catch(() => {});
+            }
+        });
 
         // Online/Offline detection
         const goOnline = () => setIsOnline(true);
@@ -51,13 +135,103 @@ export default function StudentPortal({ user }) {
         window.addEventListener('online', goOnline);
         window.addEventListener('offline', goOffline);
 
+        // Fetch notifications
+        fetch(`${API}/notifications?role=student&userId=${user?._id || ''}`).then(r => r.json()).then(data => {
+            if (Array.isArray(data)) setNotifications(data);
+        }).catch(() => {});
+
         // Fetch lessons & quizzes from API
-        fetch(`${API}/lessons`).then(r => r.json()).then(setLessons).catch(() => { });
+        fetch(`${API}/lessons`).then(r => r.json()).then(data => {
+            if (!Array.isArray(data)) { console.warn('Lessons API returned non-array:', data); return; }
+            // Normalize YouTube URLs in lessons
+            const normalized = data.map(l => ({ ...l, contentUrl: normalizeYouTubeUrl(l.contentUrl) }));
+            setLessons(normalized);
+        }).catch((err) => { console.warn('Lessons fetch error:', err); });
         fetch(`${API}/quizzes`).then(r => r.json()).then(setQuizzes).catch(() => { });
         fetch(`${API}/chat/class-8a`).then(r => r.json()).then(setChatMessages).catch(() => { });
 
-        return () => { window.removeEventListener('online', goOnline); window.removeEventListener('offline', goOffline); };
+        // Load saved progress from API or localStorage
+        if (user?._id) {
+            fetch(`${API}/users/progress/${user._id}`).then(r => r.json()).then(data => {
+                if (data.progress && data.progress.length > 0 && data.progress[0].score) {
+                    setProgress(data.progress[0].score);
+                    localStorage.setItem(`progress_${user._id}`, data.progress[0].score);
+                }
+            }).catch(() => { });
+        }
+
+        return () => {
+            socket.off('chat:message');
+            socket.off('presence:online_count');
+            socket.off('chat:typing_indicator');
+            socket.off('quiz:started');
+            socket.off('notification:new');
+            window.removeEventListener('online', goOnline);
+            window.removeEventListener('offline', goOffline);
+        };
     }, []);
+
+    // Load saved offline video lesson IDs on mount
+    useEffect(() => {
+        getSavedLessonIds().then(setSavedLessonIds).catch(() => {});
+        getOfflineStorageUsed().then(setOfflineUsageBytes).catch(() => {});
+    }, []);
+
+    // When opening a lesson, check for offline video first
+    useEffect(() => {
+        if (activeLesson) {
+            setOfflineVideoUrl(null);
+            getOfflineVideoUrl(activeLesson._id).then(url => {
+                if (url) setOfflineVideoUrl(url);
+            }).catch(() => {});
+        }
+        return () => {
+            // Revoke old blob URL to free memory
+            if (offlineVideoUrl) URL.revokeObjectURL(offlineVideoUrl);
+        };
+    }, [activeLesson]);
+
+    const handleDownloadVideo = async (lesson) => {
+        const videoUrl = resolveUrl(lesson.compressedContentUrl || lesson.contentUrl);
+        if (!videoUrl || downloadingId) return;
+        setDownloadingId(lesson._id);
+        setDownloadProgress(0);
+        try {
+            // Use XMLHttpRequest for progress tracking
+            const xhr = new XMLHttpRequest();
+            xhr.responseType = 'blob';
+            const blob = await new Promise((resolve, reject) => {
+                xhr.onprogress = (e) => { if (e.lengthComputable) setDownloadProgress(Math.round((e.loaded / e.total) * 100)); };
+                xhr.onload = () => resolve(xhr.response);
+                xhr.onerror = () => reject(new Error('Download failed'));
+                xhr.open('GET', videoUrl);
+                xhr.send();
+            });
+            // Save to IndexedDB
+            const { openDB } = await import('idb');
+            const db = await openDB('VidyaSetuOfflineDB', 2);
+            await db.put('offlineVideos', {
+                lessonId: lesson._id,
+                blob,
+                url: videoUrl,
+                savedAt: new Date().toISOString(),
+                size: blob.size,
+            });
+            setSavedLessonIds(prev => [...prev, lesson._id]);
+            getOfflineStorageUsed().then(setOfflineUsageBytes).catch(() => {});
+        } catch (e) {
+            console.error('Download failed:', e);
+            alert('Download failed. Please try again.');
+        }
+        setDownloadingId(null);
+        setDownloadProgress(0);
+    };
+
+    const handleDeleteDownload = async (lessonId) => {
+        await deleteOfflineVideo(lessonId);
+        setSavedLessonIds(prev => prev.filter(id => id !== lessonId));
+        getOfflineStorageUsed().then(setOfflineUsageBytes).catch(() => {});
+    };
 
     useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages]);
 
@@ -88,12 +262,14 @@ export default function StudentPortal({ user }) {
             }
             socket.emit('student_progress', { roomId: 'class-8a', studentId: user._id, studentName: user.name, score: newProgress, status: 'online', chapter: 'Math Ch.4' });
             setProgress(newProgress);
+            localStorage.setItem(`progress_${user._id}`, newProgress);
         } catch (e) {
             console.log('[Offline] Queueing progress update');
             import('../offline/syncQueue').then(({ enqueue }) => {
                 enqueue({ method: 'PUT', url: `${API}/users/progress/${user._id}`, body: payload });
             });
             setProgress(newProgress);
+            localStorage.setItem(`progress_${user._id}`, newProgress);
         }
         finally { setIsSaving(false); }
     };
@@ -103,23 +279,48 @@ export default function StudentPortal({ user }) {
         const answerArr = activeQuiz.questions.map((q, i) => ({ questionId: q._id, answer: answers[i] || '' }));
         const payload = { answers: answerArr };
 
+        let finalScore = 0;
         try {
             if (!isOnline) throw new Error('Offline mode - caching locally');
             const res = await fetch(`${API}/quizzes/${activeQuiz._id}/submit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             const result = await res.json();
+            finalScore = result.percentage || 0;
             setQuizResult({ ...result, quiz: activeQuiz });
         } catch (e) {
-            // Offline fallback: Queue for sync
             import('../offline/syncQueue').then(({ enqueue }) => {
                 enqueue({ method: 'POST', url: `${API}/quizzes/${activeQuiz._id}/submit`, body: payload });
             });
-
-            // Local score estimation
             let score = 0;
             activeQuiz.questions.forEach((q, i) => { if (answers[i] === q.correctAnswer) score += q.points; });
-            const pct = Math.round((score / activeQuiz.questions.reduce((a, q) => a + q.points, 0)) * 100);
-            setQuizResult({ score, totalPoints: activeQuiz.questions.length, percentage: pct, passed: pct >= 60, badge: pct >= 80 ? '🏅' : '', quiz: activeQuiz });
+            finalScore = Math.round((score / activeQuiz.questions.reduce((a, q) => a + q.points, 0)) * 100);
+            setQuizResult({ score, totalPoints: activeQuiz.questions.length, percentage: finalScore, passed: finalScore >= 60, badge: finalScore >= 80 ? '🏅' : '', quiz: activeQuiz });
         }
+
+        // Save progress to database
+        if (user?._id) {
+            fetch(`${API}/users/progress/${user._id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ newProgressScore: finalScore, chapter: activeQuiz.title })
+            }).catch(() => { });
+
+            // Sync real-time performance to Teacher Dashboard
+            socket.emit('progress:update', {
+                studentId: user._id,
+                studentName: user.name,
+                score: finalScore,
+                chapter: activeQuiz.title
+            });
+        }
+
+        setCompletedQuizIds(prev => {
+            if (!prev.includes(activeQuiz._id)) {
+                const updated = [...prev, activeQuiz._id];
+                localStorage.setItem(`completedQuizzes_${user?._id}`, JSON.stringify(updated));
+                return updated;
+            }
+            return prev;
+        });
     };
 
     const sendChat = () => {
@@ -128,13 +329,23 @@ export default function StudentPortal({ user }) {
         setChatInput('');
     };
 
-    const subjects = ['All', 'Mathematics', 'Science', 'English', 'Punjabi', 'Computer'];
+    const subjects = ['All', 'Mathematics', 'Science', 'Social Science', 'English', 'Hindi', 'Punjabi', 'Computer'];
     const filteredLessons = lessons.filter(l => {
         const matchSubject = subjectFilter === 'All' || l.subject === subjectFilter;
         const matchSearch = !lessonSearch || l.title?.toLowerCase().includes(lessonSearch.toLowerCase());
         return matchSubject && matchSearch;
     });
     const answeredCount = Object.keys(answers).filter(k => answers[k]).length;
+
+    const formatBytes = (bytes) => {
+        if (bytes == null) return 'Calculating...';
+        if (bytes === 0) return '0 B';
+        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(1024));
+        const value = bytes / (1024 ** i);
+        const rounded = value >= 10 ? value.toFixed(0) : value.toFixed(1);
+        return `${rounded} ${sizes[i]}`;
+    };
 
     // ──── QUIZ RESULT SCREEN ────
     if (quizResult) {
@@ -186,11 +397,48 @@ export default function StudentPortal({ user }) {
                 </div>
 
                 <div className="flex-1 overflow-y-auto pb-24">
-                    {activeLesson.contentUrl ? (
-                        <div className="w-full aspect-video bg-black border-b border-white/10">
-                            <ReactPlayer url={activeLesson.contentUrl} width="100%" height="100%" playing={false} controls={true} onProgress={({ played }) => setLessonProgress(played * 100)} />
-                        </div>
-                    ) : (
+                    {(activeLesson.compressedContentUrl || activeLesson.contentUrl) ? (() => {
+                        // Use offline cached video if available, otherwise resolve server URL
+                        const videoUrl = offlineVideoUrl || resolveUrl(activeLesson.compressedContentUrl || activeLesson.contentUrl);
+                        // Extract YouTube video ID for direct iframe embed (works reliably on Android WebView)
+                        const ytMatch = videoUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)/);
+                        if (ytMatch) {
+                            return (
+                                <div className="w-full aspect-video bg-black border-b border-white/10">
+                                    <iframe
+                                        src={`https://www.youtube.com/embed/${ytMatch[1]}?autoplay=1&rel=0&modestbranding=1`}
+                                        width="100%"
+                                        height="100%"
+                                        frameBorder="0"
+                                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                                        allowFullScreen
+                                        title={activeLesson.title}
+                                        style={{ border: 'none' }}
+                                    />
+                                </div>
+                            );
+                        }
+                        // Use native <video> for all direct mp4/Cloudinary URLs — works on Android WebView
+                        if (isDirectVideo(videoUrl)) {
+                            return (
+                                <div className="w-full bg-black border-b border-white/10">
+                                    <video
+                                        src={videoUrl}
+                                        controls
+                                        style={{ width: '100%', maxHeight: '280px', display: 'block' }}
+                                        onTimeUpdate={(e) => setLessonProgress((e.target.currentTime / e.target.duration) * 100 || 0)}
+                                        onError={(e) => console.error('Video error:', e.target.error)}
+                                        playsInline
+                                    />
+                                </div>
+                            );
+                        }
+                        return (
+                            <div className="w-full aspect-video bg-black border-b border-white/10">
+                                <ReactPlayer url={videoUrl} width="100%" height="100%" controls={true} onProgress={({ played }) => setLessonProgress(played * 100)} />
+                            </div>
+                        );
+                    })() : (
                         <div className="w-full aspect-video bg-gradient-to-br from-slate-800 to-slate-900 flex flex-col items-center justify-center border-b border-white/10">
                             <span className="text-5xl mb-3">📄</span><p className="font-bold text-sm text-slate-300">Document Lesson</p><p className="text-[10px] text-slate-500 mt-1">No video available for this lesson</p>
                         </div>
@@ -228,6 +476,41 @@ export default function StudentPortal({ user }) {
                                 <div className="flex items-center gap-3"><span className="text-2xl">📄</span><div><p className="text-sm font-bold text-indigo-300">Open PDF Notes</p><p className="text-[10px] text-indigo-400/60 font-semibold">{activeLesson.title} Notes</p></div></div>
                                 <svg className="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
                             </a>
+                        )}
+
+                        {/* Offline Download Button */}
+                        {isDirectVideo(resolveUrl(activeLesson.compressedContentUrl || activeLesson.contentUrl)) && (
+                            savedLessonIds.includes(activeLesson._id) ? (
+                                <div className="flex items-center justify-between p-4 bg-emerald-600/10 border border-emerald-500/20 rounded-2xl">
+                                    <div className="flex items-center gap-3">
+                                        <span className="text-2xl">📥</span>
+                                        <div><p className="text-sm font-bold text-emerald-300">Saved for Offline</p><p className="text-[10px] text-emerald-400/60 font-semibold">Available without internet</p></div>
+                                    </div>
+                                    <button onClick={() => handleDeleteDownload(activeLesson._id)} className="text-[10px] font-bold text-red-400 bg-red-500/10 px-3 py-1.5 rounded-lg">Remove</button>
+                                </div>
+                            ) : (
+                                <button
+                                    onClick={() => handleDownloadVideo(activeLesson)}
+                                    disabled={!!downloadingId}
+                                    className="w-full p-4 bg-violet-600/20 border border-violet-500/30 rounded-2xl hover:bg-violet-600/30 transition-colors text-left disabled:opacity-50"
+                                >
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-3">
+                                            <span className="text-2xl">📥</span>
+                                            <div>
+                                                <p className="text-sm font-bold text-violet-300">
+                                                    {downloadingId === activeLesson._id ? `Downloading... ${downloadProgress}%` : 'Download for Offline'}
+                                                </p>
+                                                <p className="text-[10px] text-violet-400/60 font-semibold">Watch even without internet</p>
+                                            </div>
+                                        </div>
+                                        <svg className="w-5 h-5 text-violet-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                                    </div>
+                                    {downloadingId === activeLesson._id && (
+                                        <div className="w-full bg-slate-700 rounded-full h-1.5 mt-3"><div className="bg-violet-500 h-1.5 rounded-full transition-all duration-300" style={{ width: `${downloadProgress}%` }} /></div>
+                                    )}
+                                </button>
+                            )
                         )}
 
                         {linkedQuiz && lessonProgress > 80 && (
@@ -349,11 +632,69 @@ export default function StudentPortal({ user }) {
                         <p className="text-xs text-slate-400 font-semibold mb-2">Student Portal</p>
                         <SyncStatus />
                     </div>
-                    <div className="flex flex-col items-end gap-2">
-                        <button className="relative p-2 bg-slate-800 border border-white/10 rounded-full"><svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg><span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></span></button>
+                    <div className="flex flex-col items-end gap-2 relative">
+                        <button onClick={() => setShowNotifications(!showNotifications)} className="relative p-2 bg-slate-800 border border-white/10 rounded-full">
+                            <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
+                            {notifications.filter(n => !n.read).length > 0 && (
+                                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] bg-red-500 rounded-full text-[10px] font-bold flex items-center justify-center px-1">{notifications.filter(n => !n.read).length}</span>
+                            )}
+                        </button>
                     </div>
                 </div>
             </header>
+
+            {/* ──── NOTIFICATION PANEL ──── */}
+            {showNotifications && (
+                <div className="fixed inset-0 z-50 bg-black/60" onClick={() => setShowNotifications(false)}>
+                    <div className="absolute top-16 right-4 w-[calc(100%-2rem)] max-w-sm bg-slate-900 border border-white/10 rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+                        <div className="flex justify-between items-center px-4 py-3 border-b border-white/5">
+                            <h3 className="text-sm font-extrabold text-white">Notifications</h3>
+                            {notifications.filter(n => !n.read).length > 0 && (
+                                <button onClick={() => {
+                                    fetch(`${API}/notifications/read-all`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: user?._id }) }).catch(() => {});
+                                    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+                                }} className="text-[10px] font-bold text-indigo-400 hover:text-indigo-300">Mark all read</button>
+                            )}
+                        </div>
+                        <div className="max-h-80 overflow-y-auto divide-y divide-white/5">
+                            {notifications.length === 0 && (
+                                <div className="p-6 text-center text-slate-500 text-sm font-semibold">No notifications yet</div>
+                            )}
+                            {notifications.map((notif, i) => (
+                                <button key={notif._id || i} className={`w-full text-left px-4 py-3 hover:bg-slate-800/80 transition-colors ${!notif.read ? 'bg-indigo-950/30' : ''}`}
+                                    onClick={() => {
+                                        // Mark as read
+                                        if (!notif.read) {
+                                            fetch(`${API}/notifications/${notif._id}/read`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: user?._id }) }).catch(() => {});
+                                            setNotifications(prev => prev.map(n => n._id === notif._id ? { ...n, read: true } : n));
+                                        }
+                                        // Navigate based on type
+                                        if (notif.type === 'lesson' && notif.referenceId) {
+                                            const lesson = lessons.find(l => l._id === notif.referenceId);
+                                            if (lesson) { setActiveLesson(lesson); setLessonProgress(0); }
+                                            else { setActiveTab('lessons'); }
+                                        } else if (notif.type === 'quiz' && notif.referenceId) {
+                                            const quiz = quizzes.find(q => q._id === notif.referenceId);
+                                            if (quiz) { setActiveQuiz(quiz); setCurrentQ(0); setAnswers({}); setQuizResult(null); }
+                                            else { setActiveTab('quizzes'); }
+                                        }
+                                        setShowNotifications(false);
+                                    }}>
+                                    <div className="flex items-start gap-3">
+                                        <span className="text-lg mt-0.5">{notif.type === 'lesson' ? '📚' : notif.type === 'quiz' ? '✏️' : notif.type === 'announcement' ? '📢' : '🔔'}</span>
+                                        <div className="flex-1 min-w-0">
+                                            <p className={`text-sm font-bold ${!notif.read ? 'text-white' : 'text-slate-300'} truncate`}>{notif.title}</p>
+                                            <p className="text-xs text-slate-400 mt-0.5 line-clamp-2">{notif.message}</p>
+                                            <p className="text-[10px] text-slate-600 mt-1 font-semibold">{new Date(notif.createdAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>
+                                        </div>
+                                        {!notif.read && <div className="w-2 h-2 bg-indigo-500 rounded-full mt-2 shrink-0"></div>}
+                                    </div>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <main className="px-5 pt-5 space-y-6 pb-4">
                 {/* ──── HOME TAB ──── */}
@@ -454,6 +795,14 @@ export default function StudentPortal({ user }) {
                                         <p className="text-[11px] text-slate-500 font-semibold">{lesson.language || 'English'} · {lesson.duration || 30} min</p>
                                     </div>
                                     <div className="flex flex-col items-center gap-1 shrink-0">
+                                        {savedLessonIds.includes(lesson._id) && (
+                                            <span className="text-[9px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md">📥 Offline</span>
+                                        )}
+                                        {!savedLessonIds.includes(lesson._id) && isDirectVideo(resolveUrl(lesson.compressedContentUrl || lesson.contentUrl)) && (
+                                            <button onClick={(e) => { e.stopPropagation(); handleDownloadVideo(lesson); }} disabled={!!downloadingId} className="text-[9px] font-bold text-violet-400 bg-violet-500/10 px-2 py-0.5 rounded-md disabled:opacity-50">
+                                                {downloadingId === lesson._id ? `${downloadProgress}%` : '📥 Save'}
+                                            </button>
+                                        )}
                                         <span className="bg-indigo-600 text-white text-[10px] font-bold py-2 px-4 rounded-lg">Start</span>
                                     </div>
                                 </div>
@@ -472,16 +821,23 @@ export default function StudentPortal({ user }) {
                             <button onClick={() => setQuizFilter('completed')} className={`flex-1 py-2.5 rounded-lg text-xs font-bold transition-colors ${quizFilter === 'completed' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:text-white'}`}>Completed</button>
                         </div>
                         <div className="space-y-3">
-                            {quizzes.map((quiz, i) => (
-                                <div key={quiz._id || i} className="bg-slate-800 rounded-2xl p-4 border border-white/5">
+                            {quizzes.filter(q => quizFilter === 'completed' ? completedQuizIds.includes(q._id) : !completedQuizIds.includes(q._id)).map((quiz, i) => (
+                                <div key={quiz._id || i} className={`rounded-2xl p-4 border ${quizFilter === 'completed' ? 'bg-indigo-950/20 border-indigo-500/20' : 'bg-slate-800 border-white/5'}`}>
                                     <div className="flex items-center justify-between mb-3">
-                                        <div><h3 className="font-bold text-sm">{quiz.title}</h3><p className="text-[11px] text-slate-500 font-semibold">{quiz.subject} · {quiz.questions?.length} questions · {Math.floor((quiz.timeLimit || 900) / 60)} min</p></div>
-                                        <span className="text-[10px] font-extrabold bg-indigo-500/20 text-indigo-300 px-2 py-1 rounded-md uppercase">New</span>
+                                        <div>
+                                            <h3 className="font-bold text-sm">{quiz.title}</h3>
+                                            <p className="text-[11px] text-slate-500 font-semibold">{quiz.subject} · {quiz.questions?.length} questions · {Math.floor((quiz.timeLimit || 900) / 60)} min</p>
+                                        </div>
+                                        {quizFilter !== 'completed' && <span className="text-[10px] font-extrabold bg-indigo-500/20 text-indigo-300 px-2 py-1 rounded-md uppercase">New</span>}
+                                        {quizFilter === 'completed' && <span className="text-[10px] font-extrabold bg-emerald-500/10 text-emerald-400 px-2 py-1 rounded-md uppercase">Done ✓</span>}
                                     </div>
-                                    <button onClick={() => { setActiveQuiz(quiz); setCurrentQ(0); setAnswers({}); setQuizResult(null); }} className="w-full py-3 bg-indigo-600 rounded-xl text-sm font-bold hover:bg-indigo-500 active:scale-95 transition-all">Start Quiz →</button>
+                                    <button onClick={() => { setActiveQuiz(quiz); setCurrentQ(0); setAnswers({}); setQuizResult(null); }}
+                                        className={`w-full py-3 rounded-xl text-sm font-bold transition-all ${quizFilter === 'completed' ? 'bg-slate-700 hover:bg-slate-600 text-white' : 'bg-indigo-600 hover:bg-indigo-500 active:scale-95'}`}>
+                                        {quizFilter === 'completed' ? 'Retake Quiz ↺' : 'Start Quiz →'}
+                                    </button>
                                 </div>
                             ))}
-                            {quizzes.length === 0 && <p className="text-center text-slate-500 text-sm py-8">✏️ No quizzes available yet.</p>}
+                            {quizzes.filter(q => quizFilter === 'completed' ? completedQuizIds.includes(q._id) : !completedQuizIds.includes(q._id)).length === 0 && <p className="text-center text-slate-500 text-sm py-8">{quizFilter === 'completed' ? '🏆 No completed quizzes yet.' : '✏️ No pending quizzes to take.'}</p>}
                         </div>
                     </div>
                 )}
@@ -536,10 +892,38 @@ export default function StudentPortal({ user }) {
                             </div>
                         </div>
                         <div className="bg-slate-800 rounded-2xl border border-white/5 overflow-hidden divide-y divide-white/5">
-                            {[{ icon: '🌐', label: 'Language', value: user?.language || 'English' }, { icon: '📥', label: 'Offline Downloads', value: '1.2 GB' }, { icon: '🏫', label: 'School', value: user?.schoolId || 'nabha-01' }].map((item, i) => (
+                            {[{
+                                icon: '🌐',
+                                label: 'Language',
+                                value: user?.language || 'English'
+                            }, {
+                                icon: '📥',
+                                label: 'Offline Downloads',
+                                value: formatBytes(offlineUsageBytes),
+                                description: 'Lessons, videos, notes & progress stored on this device'
+                            }, {
+                                icon: '🏫',
+                                label: 'School',
+                                value: user?.schoolId || 'nabha-01'
+                            }].map((item, i) => (
                                 <div key={i} className="p-4 flex items-center justify-between hover:bg-slate-700/50 cursor-pointer transition-colors">
-                                    <div className="flex items-center gap-3"><span className="text-lg">{item.icon}</span><span className="font-bold text-sm text-slate-300">{item.label}</span></div>
-                                    <div className="flex items-center gap-2 text-sm font-semibold text-slate-500"><span>{item.value}</span><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7"></path></svg></div>
+                                    <div className="flex items-center gap-3">
+                                        <span className="text-lg">{item.icon}</span>
+                                        <div className="flex flex-col items-start">
+                                            <span className="font-bold text-sm text-slate-300">{item.label}</span>
+                                            {item.description && (
+                                                <span className="text-[11px] text-slate-500 font-semibold">
+                                                    {item.description}
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-2 text-sm font-semibold text-slate-500">
+                                        <span>{item.value}</span>
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7"></path>
+                                        </svg>
+                                    </div>
                                 </div>
                             ))}
                         </div>

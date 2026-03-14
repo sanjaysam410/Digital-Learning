@@ -24,8 +24,10 @@ const lessonSchema = new mongoose.Schema({
     tags: [String],
     isPublished: { type: Boolean, default: false },
     isDownloadable: { type: Boolean, default: true },
+    compressionStatus: { type: String, enum: ['none', 'processing', 'done', 'error'], default: 'none' },
+    compressedContentUrl: { type: String, default: '' },
     schoolRef: { type: mongoose.Schema.Types.ObjectId, ref: 'School' },
-    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    createdBy: { type: String, default: '' },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Lesson', lessonSchema);

@@ -1,4 +1,6 @@
 const Quiz = require('../models/Quiz');
+const { createNotification } = require('./notificationController');
+const { getIO } = require('../socketInstance');
 
 // @desc    Get all quizzes
 const getQuizzes = async (req, res) => {
@@ -45,6 +47,22 @@ const createQuiz = async (req, res) => {
     }
     try {
         const quiz = await Quiz.create({ ...req.body, createdBy: req.user?.userId || req.body.createdBy });
+
+        // Create notification for new quiz
+        const notification = await createNotification({
+            title: 'New Quiz Available',
+            message: `"${quiz.title}" — ${quiz.subject || 'General'} quiz is now available`,
+            type: 'quiz',
+            referenceId: quiz._id.toString(),
+            createdBy: req.user?.userId || req.body.createdBy,
+            createdByName: req.body.createdByName || 'Teacher',
+            targetRole: 'all',
+        });
+        const io = getIO();
+        if (io && notification) {
+            io.emit('notification:new', notification.toObject());
+        }
+
         res.status(201).json(quiz);
     } catch (error) {
         res.status(400).json({ message: 'Invalid quiz data', error: error.message });

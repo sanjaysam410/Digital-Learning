@@ -22,7 +22,7 @@ const registerUser = async (req, res) => {
             email,
             role: role || 'student',
             schoolId: schoolId || 'nabha-01',
-            language: language || 'english',
+            language: language || 'English',
             token: generateToken(`mock-${role}`),
         });
     }
@@ -39,7 +39,7 @@ const registerUser = async (req, res) => {
             password,
             role: role || 'student',
             schoolId: schoolId || 'nabha-01',
-            language: language || 'english',
+            language: language || 'English',
         });
 
         return res.status(201).json({
@@ -188,9 +188,29 @@ const saveUserProgress = async (req, res) => {
     }
 };
 
+// @desc    Get all students
+// @route   GET /api/users/students
+// @access  Private (Teacher/Admin)
+const getStudents = async (req, res) => {
+    const mongoose = require('mongoose');
+    if (mongoose.connection.readyState !== 1) {
+        return res.json([
+            { _id: 's1', name: 'Mock Aarav', progress: [{ score: 72 }] }
+        ]);
+    }
+
+    try {
+        const students = await User.find({ role: 'student' }).select('-password');
+        res.json(students);
+    } catch (error) {
+        res.status(500).json({ message: 'Server error', error: error.message });
+    }
+};
+
 module.exports = {
     registerUser,
     authUser,
     getUserProgress,
-    saveUserProgress
+    saveUserProgress,
+    getStudents
 };

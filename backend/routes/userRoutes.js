@@ -1,10 +1,11 @@
 const express = require('express');
 const router = express.Router();
-const { registerUser, authUser, getUserProgress, saveUserProgress } = require('../controllers/userController');
+const { registerUser, authUser, getUserProgress, saveUserProgress, getStudents } = require('../controllers/userController');
 
 // Define specific routes mapping to controller logic
 router.post('/', registerUser);
 router.post('/login', authUser);
+router.get('/students', getStudents);
 router.get('/progress/:id', getUserProgress);
 router.put('/progress/:id', saveUserProgress);
 

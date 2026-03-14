@@ -1,8 +1,20 @@
 {
   "appId": "com.nabha.learning",
-  "appName": "nabha",
+  "appName": "VidyaSetu",
   "webDir": "dist",
   "server": {
-    "cleartext": true
+    "cleartext": true,
+    "androidScheme": "http",
+    "allowNavigation": [
+      "*.youtube.com",
+      "*.youtu.be",
+      "*.googlevideo.com",
+      "*.google.com",
+      "*.cloudinary.com",
+      "res.cloudinary.com"
+    ]
+  },
+  "android": {
+    "allowMixedContent": true
   }
 }

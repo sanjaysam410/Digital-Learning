@@ -1,11 +1,23 @@
 import { Capacitor } from '@capacitor/core';
 
-// Detect if running natively on a mobile device (Android/iOS)
 const isCapacitor = Capacitor.isNativePlatform();
 
-// On Android emulator, 10.0.2.2 maps to the host machine's localhost
-// On a real device or web, use localhost or the specific hostname
-const HOST = isCapacitor ? '10.0.2.2' : 'localhost';
+// Read saved server URL from localStorage (set from Login screen)
+const savedUrl = localStorage.getItem('serverUrl');
 
-export const API_BASE = `http://${HOST}:5001/api`;
-export const SOCKET_URL = `http://${HOST}:5001`;
+// Default: localhost for web, empty for mobile (forces user to configure)
+const DEFAULT_HOST = isCapacitor ? '' : 'localhost';
+const DEFAULT_PORT = '5001';
+
+// If user saved a full URL like "http://192.168.1.4:5001", use it directly
+// Otherwise fall back to default
+let SERVER_BASE = '';
+if (savedUrl) {
+    // Remove trailing slash if any
+    SERVER_BASE = savedUrl.replace(/\/+$/, '');
+} else if (DEFAULT_HOST) {
+    SERVER_BASE = `http://${DEFAULT_HOST}:${DEFAULT_PORT}`;
+}
+
+export const API_BASE = `${SERVER_BASE}/api`;
+export const SOCKET_URL = SERVER_BASE;

@@ -1,10 +1,27 @@
 import React, { useState, useEffect } from 'react';
 import { API_BASE } from '../config';
+import socket from '../socket';
 
 const API = API_BASE;
 
 export default function AdminPanel({ user }) {
     const [activeTab, setActiveTab] = useState('overview');
+    const [notifications, setNotifications] = useState([]);
+    const [showNotifications, setShowNotifications] = useState(false);
+
+    useEffect(() => {
+        // Fetch notifications
+        fetch(`${API}/notifications?role=admin&userId=${user?._id || ''}`).then(r => r.json()).then(data => {
+            if (Array.isArray(data)) setNotifications(data);
+        }).catch(() => {});
+
+        // Real-time notifications
+        socket.on('notification:new', (notif) => {
+            setNotifications(prev => [{ ...notif, read: false }, ...prev]);
+        });
+
+        return () => { socket.off('notification:new'); };
+    }, []);
 
     // Stats and mock data
     const [stats, setStats] = useState({
@@ -29,8 +46,16 @@ export default function AdminPanel({ user }) {
                     <h1 className="text-xl font-bold text-white">{title}</h1>
                     <p className="text-xs text-emerald-400 font-semibold mt-0.5">Govt. School, Nabha • Admin</p>
                 </div>
-                <div className="w-10 h-10 rounded-full bg-emerald-900/40 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-bold">
-                    {user?.name?.charAt(0) || 'A'}
+                <div className="flex items-center gap-3">
+                    <button onClick={() => setShowNotifications(!showNotifications)} className="relative p-2 bg-slate-800 border border-white/10 rounded-full">
+                        <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
+                        {notifications.filter(n => !n.read).length > 0 && (
+                            <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] bg-red-500 rounded-full text-[10px] font-bold flex items-center justify-center px-1">{notifications.filter(n => !n.read).length}</span>
+                        )}
+                    </button>
+                    <div className="w-10 h-10 rounded-full bg-emerald-900/40 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-bold">
+                        {user?.name?.charAt(0) || 'A'}
+                    </div>
                 </div>
             </div>
         </div>
@@ -261,6 +286,48 @@ export default function AdminPanel({ user }) {
         <div className="min-h-screen bg-slate-950 text-white flex justify-center pb-20 pt-20">
             <div className="w-full max-w-md bg-slate-950 relative min-h-screen shadow-2xl">
                 <Header title={activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} />
+
+                {/* ──── NOTIFICATION PANEL ──── */}
+                {showNotifications && (
+                    <div className="fixed inset-0 z-50 bg-black/60" onClick={() => setShowNotifications(false)}>
+                        <div className="absolute top-16 right-4 w-[calc(100%-2rem)] max-w-sm bg-slate-900 border border-white/10 rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+                            <div className="flex justify-between items-center px-4 py-3 border-b border-white/5">
+                                <h3 className="text-sm font-extrabold text-white">Notifications</h3>
+                                {notifications.filter(n => !n.read).length > 0 && (
+                                    <button onClick={() => {
+                                        fetch(`${API}/notifications/read-all`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: user?._id }) }).catch(() => {});
+                                        setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+                                    }} className="text-[10px] font-bold text-emerald-400 hover:text-emerald-300">Mark all read</button>
+                                )}
+                            </div>
+                            <div className="max-h-80 overflow-y-auto divide-y divide-white/5">
+                                {notifications.length === 0 && (
+                                    <div className="p-6 text-center text-slate-500 text-sm font-semibold">No notifications yet</div>
+                                )}
+                                {notifications.map((notif, i) => (
+                                    <button key={notif._id || i} className={`w-full text-left px-4 py-3 hover:bg-slate-800/80 transition-colors ${!notif.read ? 'bg-emerald-950/30' : ''}`}
+                                        onClick={() => {
+                                            if (!notif.read) {
+                                                fetch(`${API}/notifications/${notif._id}/read`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: user?._id }) }).catch(() => {});
+                                                setNotifications(prev => prev.map(n => n._id === notif._id ? { ...n, read: true } : n));
+                                            }
+                                            setShowNotifications(false);
+                                        }}>
+                                        <div className="flex items-start gap-3">
+                                            <span className="text-lg mt-0.5">{notif.type === 'lesson' ? '📚' : notif.type === 'quiz' ? '✏️' : notif.type === 'announcement' ? '📢' : '🔔'}</span>
+                                            <div className="flex-1 min-w-0">
+                                                <p className={`text-sm font-bold ${!notif.read ? 'text-white' : 'text-slate-300'} truncate`}>{notif.title}</p>
+                                                <p className="text-xs text-slate-400 mt-0.5 line-clamp-2">{notif.message}</p>
+                                                <p className="text-[10px] text-slate-600 mt-1 font-semibold">{new Date(notif.createdAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>
+                                            </div>
+                                            {!notif.read && <div className="w-2 h-2 bg-emerald-500 rounded-full mt-2 shrink-0"></div>}
+                                        </div>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                )}
 
                 <div className="animate-fadeIn">
                     {activeTab === 'overview' && <OverviewTab />}

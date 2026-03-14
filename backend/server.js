@@ -8,12 +8,11 @@ const { Server } = require('socket.io');
 // Load env variables
 dotenv.config();
 
+const { setIO } = require('./services/videoCompressor');
+
 // We will skip strict connection failure for demo purposes so server runs locally without a valid MongoDB URI
 const connectDB = require('./config/db');
 connectDB().catch(err => console.log('Mongodb connect deferred. Please add valid URI to .env'));
-
-// Video Compression Pipeline
-const { setIO } = require('./services/videoCompressor');
 
 const app = express();
 const server = http.createServer(app);
@@ -26,6 +25,13 @@ const io = new Server(server, {
     },
 });
 
+// Wire Socket.IO into the video compression service
+setIO(io);
+
+// Share Socket.IO instance for controllers (notifications, etc.)
+const socketInstance = require('./socketInstance');
+socketInstance.setIO(io);
+
 // Middlewares
 app.use(cors());
 app.use(express.json()); // Allows parsing JSON bodies
@@ -37,19 +43,15 @@ app.use('/api/lessons', require('./routes/lessonRoutes'));
 app.use('/api/quizzes', require('./routes/quizRoutes'));
 app.use('/api/chat', require('./routes/chatRoutes'));
 app.use('/api/upload', require('./routes/uploadRoutes'));
+app.use('/api/notifications', require('./routes/notificationRoutes'));
 
-// Serve uploaded content (legacy, raw, and compressed)
+// Serve uploaded content (raw and compressed subdirs included)
 app.use('/uploads', express.static(path.join(__dirname, 'public/uploads')));
-app.use('/uploads/raw', express.static(path.join(__dirname, 'public/uploads/raw')));
-app.use('/uploads/compressed', express.static(path.join(__dirname, 'public/uploads/compressed')));
 
 // Basic health check route
 app.get('/', (req, res) => {
     res.send('Vidya Setu API is Running...');
 });
-
-// Pass Socket.IO to the video compressor so it can emit real-time events
-setIO(io);
 
 // Socket.io Connection Logic — Full Real-time System (Spec 30)
 io.on('connection', (socket) => {
@@ -100,6 +102,13 @@ io.on('connection', (socket) => {
             timestamp: new Date(),
         };
         io.to(data.roomId).emit('chat:message', message);
+
+        // Persist message to MongoDB if connected
+        const mongoose = require('mongoose');
+        if (mongoose.connection.readyState === 1) {
+            const Message = require('./models/Message');
+            Message.create(message).catch(err => console.log('Chat save error:', err.message));
+        }
     });
 
     socket.on('chat:typing', (data) => {
@@ -157,8 +166,25 @@ io.on('connection', (socket) => {
         io.to(data.roomId).emit('class:ended', {});
     });
 
-    socket.on('class:announce', (data) => {
+    socket.on('class:announce', async (data) => {
         io.to(data.roomId).emit('class:announcement', { title: data.title, body: data.body });
+        // Persist announcement as a notification
+        const { createNotification } = require('./controllers/notificationController');
+        const notification = await createNotification({
+            title: data.title,
+            message: data.body,
+            type: 'announcement',
+            createdByName: data.teacherName || 'Teacher',
+            targetRole: 'all',
+        });
+        if (notification) {
+            io.emit('notification:new', notification.toObject());
+        }
+    });
+
+    socket.on('progress:update', (data) => {
+        // Relay progress from student to teacher in the room
+        io.to(socket.roomId || 'class-8a').emit('update_teacher_dashboard', data);
     });
 
     // ── SYNC (Offline Data Handshake) ──

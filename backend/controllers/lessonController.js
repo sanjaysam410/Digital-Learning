@@ -1,20 +1,24 @@
 const Lesson = require('../models/Lesson');
+const { createNotification } = require('./notificationController');
+const { getIO } = require('../socketInstance');
 
 // @desc    Get all lessons (with filters)
 const getLessons = async (req, res) => {
     const mongoose = require('mongoose');
     if (mongoose.connection.readyState !== 1) {
         return res.json([
-            { _id: 'demo-1', title: 'Mathematics: Algebra Foundations', subject: 'Mathematics', grade: '8', language: 'English', description: 'Learn basic algebraic concepts', duration: 45, isPublished: true, isDownloadable: true, tags: ['algebra', 'math'] },
-            { _id: 'demo-2', title: 'Science: The Solar System', subject: 'Science', grade: '8', language: 'English', description: 'Explore our solar system', duration: 30, isPublished: true, isDownloadable: true, tags: ['science', 'space'] },
-            { _id: 'demo-3', title: 'English: Grammar Basics', subject: 'English', grade: '8', language: 'English', description: 'Master English grammar', duration: 35, isPublished: true, isDownloadable: true, tags: ['english', 'grammar'] },
-            { _id: 'demo-4', title: 'ਪੰਜਾਬੀ: ਮੁੱਢਲੀ ਵਿਆਕਰਣ', subject: 'Punjabi', grade: '8', language: 'Punjabi', description: 'ਪੰਜਾਬੀ ਵਿਆਕਰਣ ਸਿੱਖੋ', duration: 40, isPublished: true, isDownloadable: true, tags: ['punjabi'] },
+            { _id: 'demo-1', title: 'Mathematics: Algebra Foundations', subject: 'Mathematics', grade: '8', language: 'English', description: 'Learn basic algebraic concepts', duration: 45, isPublished: true, isDownloadable: true, tags: ['algebra', 'math'], contentUrl: "https://www.youtube.com/watch?v=Jpi0hXcaA5k" },
+            { _id: 'demo-2', title: 'Science: The Solar System', subject: 'Science', grade: '8', language: 'English', description: 'Explore our solar system', duration: 30, isPublished: true, isDownloadable: true, tags: ['science', 'space'], contentUrl: "https://www.youtube.com/watch?v=rsc6e_JEDY0" },
+            { _id: 'demo-social', title: 'Social Science: Human History', subject: 'Social Science', grade: '8', language: 'English', description: 'Understanding human progression', duration: 40, isPublished: true, isDownloadable: true, tags: ['history', 'civics'], contentUrl: "https://www.youtube.com/watch?v=x8fb9BcWdro" },
+            { _id: 'demo-3', title: 'English: Grammar Basics', subject: 'English', grade: '8', language: 'English', description: 'Master English grammar', duration: 35, isPublished: true, isDownloadable: true, tags: ['english', 'grammar'], contentUrl: "https://www.youtube.com/watch?v=oM4hhWMYsqY" },
+            { _id: 'demo-hindi', title: 'Hindi: Vyakaran', subject: 'Hindi', grade: '8', language: 'Hindi', description: 'Learn Hindi basics', duration: 35, isPublished: true, isDownloadable: true, tags: ['hindi', 'grammar'], contentUrl: "https://www.youtube.com/watch?v=88DkVgP2ACw" },
+            { _id: 'demo-4', title: 'ਪੰਜਾਬੀ: ਮੁੱਢਲੀ ਵਿਆਕਰਣ', subject: 'Punjabi', grade: '8', language: 'Punjabi', description: 'ਪੰਜਾਬੀ ਵਿਆਕਰਣ ਸਿੱਖੋ', duration: 40, isPublished: true, isDownloadable: true, tags: ['punjabi'], contentUrl: "https://www.youtube.com/watch?v=2AmldBXnzvY" },
             { _id: 'demo-5', title: 'Digital Literacy 101', subject: 'Computer', grade: '8', language: 'English', description: 'Basic computer skills', duration: 50, isPublished: true, isDownloadable: true, tags: ['computer', 'digital'] },
         ]);
     }
     try {
         const { subject, grade, language } = req.query;
-        const filter = { isPublished: true };
+        const filter = {};
         if (subject) filter.subject = subject;
         if (grade) filter.grade = grade;
         if (language) filter.language = language;
@@ -44,6 +48,23 @@ const createLesson = async (req, res) => {
     }
     try {
         const lesson = await Lesson.create({ ...req.body, createdBy: req.user?.userId || req.body.createdBy });
+
+        // Create notification for new lesson
+        const notification = await createNotification({
+            title: 'New Lesson Published',
+            message: `"${lesson.title}" has been added to ${lesson.subject || 'your course'}`,
+            type: 'lesson',
+            referenceId: lesson._id.toString(),
+            createdBy: req.user?.userId || req.body.createdBy,
+            createdByName: req.body.createdByName || 'Teacher',
+            targetRole: 'all',
+        });
+        // Broadcast real-time notification to all connected clients
+        const io = getIO();
+        if (io && notification) {
+            io.emit('notification:new', notification.toObject());
+        }
+
         res.status(201).json(lesson);
     } catch (error) {
         res.status(400).json({ message: 'Invalid lesson data', error: error.message });

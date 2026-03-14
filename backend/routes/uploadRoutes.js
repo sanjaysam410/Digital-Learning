@@ -2,29 +2,31 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const { addCompressionJob, getCompressionStatus } = require('../services/videoCompressor');
+const cloudinary = require('cloudinary').v2;
+const { addCompressionJob } = require('../services/videoCompressor');
 
 const router = express.Router();
 
-// Create separate directories for raw and compressed uploads
+// Configure Cloudinary
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+// Ensure temp directories exist (files are deleted after Cloudinary upload)
 const rawDir = path.join(__dirname, '../public/uploads/raw');
 const compressedDir = path.join(__dirname, '../public/uploads/compressed');
 [rawDir, compressedDir].forEach(dir => {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-// Also keep legacy uploads dir for non-video files
-const uploadsDir = path.join(__dirname, '../public/uploads');
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+// Track compression status: filename -> { status, cloudinaryUrl }
+const compressionStatus = {};
 
 const storage = multer.diskStorage({
     destination(req, file, cb) {
-        // Videos go to raw/, everything else to uploads/
-        if (file.mimetype && file.mimetype.startsWith('video/')) {
-            cb(null, rawDir);
-        } else {
-            cb(null, uploadsDir);
-        }
+        cb(null, rawDir);
     },
     filename(req, file, cb) {
         cb(null, `${file.fieldname}-${Date.now()}${path.extname(file.originalname)}`);
@@ -34,7 +36,6 @@ const storage = multer.diskStorage({
 function checkFileType(file, cb) {
     const filetypes = /mp4|pdf|jpeg|jpg|png/;
     const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
-    // Also accommodate application/pdf, video/mp4, image/jpeg, etc.
     if (extname) {
         return cb(null, true);
     } else {
@@ -44,56 +45,68 @@ function checkFileType(file, cb) {
 
 const upload = multer({
     storage,
-    limits: { fileSize: 500000000 }, // 500MB max 
+    limits: { fileSize: 500000000 }, // 500MB max
     fileFilter: function (req, file, cb) {
         checkFileType(file, cb);
     },
 });
 
-// POST / — Upload a file, auto-compress videos in the background
-router.post('/', upload.single('file'), (req, res) => {
+router.post('/', upload.single('file'), async (req, res) => {
     if (!req.file) {
         return res.status(400).json({ message: 'No file uploaded' });
     }
 
-    const isVideo = req.file.mimetype && req.file.mimetype.startsWith('video/');
+    const filename = req.file.filename;
 
-    if (isVideo) {
-        // Serve the raw file immediately so the lesson can be saved
-        const rawUrl = `http://localhost:${process.env.PORT || 5001}/uploads/raw/${req.file.filename}`;
+    // If it's a video, queue compression + Cloudinary upload
+    if (req.file.mimetype.startsWith('video/')) {
+        const inputPath = path.join(rawDir, filename);
+        const outputPath = path.join(compressedDir, filename);
+        const teacherSocketId = req.headers['x-socket-id'] || null;
 
-        // Queue background compression
+        compressionStatus[filename] = { status: 'queued', cloudinaryUrl: null };
+
         addCompressionJob({
-            inputPath: req.file.path,
-            filename: req.file.filename,
-            uploaderId: req.body.uploaderId || null,
+            inputPath,
+            outputPath,
+            filename,
+            teacherSocketId,
+            onStart: () => { compressionStatus[filename].status = 'processing'; },
+            onDone: (cloudinaryUrl) => {
+                compressionStatus[filename].status = 'done';
+                compressionStatus[filename].cloudinaryUrl = cloudinaryUrl;
+            },
+            onError: () => { compressionStatus[filename].status = 'error'; },
         });
 
-        res.json({
-            message: 'Video uploaded! Compression in progress...',
-            fileUrl: rawUrl,
+        return res.json({
+            message: 'Video uploaded, compression & cloud upload queued',
             status: 'processing',
-            filename: req.file.filename,
+            filename,
         });
-    } else {
-        // Non-video files — return immediately
-        const fileUrl = `http://localhost:${process.env.PORT || 5001}/uploads/${req.file.filename}`;
-        res.json({ message: 'File Uploaded', fileUrl });
+    }
+
+    // Non-video files (PDF, images): upload directly to Cloudinary
+    try {
+        const localPath = path.join(rawDir, filename);
+        const result = await cloudinary.uploader.upload(localPath, {
+            resource_type: 'auto',
+            folder: 'vidya-setu/files',
+        });
+        // Delete local file after cloud upload
+        fs.unlink(localPath, () => {});
+        res.json({ message: 'File Uploaded', fileUrl: result.secure_url });
+    } catch (err) {
+        // Fallback: serve locally if Cloudinary fails
+        res.json({ message: 'File Uploaded (local)', fileUrl: `/uploads/raw/${filename}` });
     }
 });
 
-// GET /status/:filename — Check compression status of a video
+// GET /api/upload/status/:filename
 router.get('/status/:filename', (req, res) => {
-    const status = getCompressionStatus(req.params.filename);
-    if (!status) {
-        return res.status(404).json({ message: 'No compression job found for this file' });
-    }
-
-    const result = { ...status };
-    if (status.status === 'done') {
-        result.compressedUrl = `http://localhost:${process.env.PORT || 5001}/uploads/compressed/${req.params.filename}`;
-    }
-    res.json(result);
+    const { filename } = req.params;
+    const info = compressionStatus[filename] || { status: 'unknown', cloudinaryUrl: null };
+    res.json({ filename, status: info.status, compressedUrl: info.cloudinaryUrl });
 });
 
 module.exports = router;

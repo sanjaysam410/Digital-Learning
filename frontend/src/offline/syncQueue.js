@@ -3,13 +3,16 @@ import axios from 'axios';
 
 const DB_NAME = 'VidyaSetuOfflineDB';
 const STORE_NAME = 'syncQueue';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 export async function getDB() {
     return openDB(DB_NAME, DB_VERSION, {
         upgrade(db) {
             if (!db.objectStoreNames.contains(STORE_NAME)) {
                 db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+            }
+            if (!db.objectStoreNames.contains('offlineVideos')) {
+                db.createObjectStore('offlineVideos', { keyPath: 'lessonId' });
             }
         },
     });

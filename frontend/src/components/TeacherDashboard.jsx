@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BarChart, Bar, ResponsiveContainer, XAxis, YAxis, Tooltip, PieChart, Pie, Cell } from 'recharts';
 import socket from '../socket';
-import { API_BASE } from '../config';
+import { API_BASE, SOCKET_URL } from '../config';
 
 const API = API_BASE;
+// Resolve relative upload paths to the correct server host
+const resolveUrl = (url) => (url && url.startsWith('/uploads/')) ? `${SOCKET_URL}${url}` : url;
 
 export default function TeacherDashboard({ user }) {
     const [activeTab, setActiveTab] = useState('overview');
@@ -19,11 +21,7 @@ export default function TeacherDashboard({ user }) {
     const [uploadProgress, setUploadProgress] = useState(0);
     const [isUploading, setIsUploading] = useState(false);
     const [uploadType, setUploadType] = useState('');
-
-    // Video Compression State
-    const [compressionStatus, setCompressionStatus] = useState(''); // '' | 'processing' | 'done' | 'error'
-    const [compressionProgress, setCompressionProgress] = useState(0);
-    const [compressedVideoUrl, setCompressedVideoUrl] = useState('');
+    const [compressionStatus, setCompressionStatus] = useState('idle'); // idle | processing | done | error
 
     // Lesson Builder State
     const [showLessonBuilder, setShowLessonBuilder] = useState(false);
@@ -33,6 +31,7 @@ export default function TeacherDashboard({ user }) {
     // Analytics State
     const [analyticsFilter, setAnalyticsFilter] = useState({ grade: 'All', subject: 'All' });
     const [searchStudent, setSearchStudent] = useState('');
+    const [analyticsCardFilter, setAnalyticsCardFilter] = useState('all');
 
     // Quiz Builder State
     const [showQuizBuilder, setShowQuizBuilder] = useState(false);
@@ -41,12 +40,17 @@ export default function TeacherDashboard({ user }) {
     const [qForm, setQForm] = useState({ questionText: '', type: 'mcq', options: ['', '', '', ''], correctAnswer: '', points: 1, explanation: '' });
     const [previewMode, setPreviewMode] = useState(false);
 
+    // Notifications
+    const [notifications, setNotifications] = useState([]);
+    const [showNotifications, setShowNotifications] = useState(false);
+
     // Chat State
     const [chatMessages, setChatMessages] = useState([]);
     const [chatInput, setChatInput] = useState('');
     const [showAnnouncement, setShowAnnouncement] = useState(false);
     const [announcement, setAnnouncement] = useState({ title: '', body: '' });
     const chatEndRef = useRef(null);
+    const savedLessonIdRef = useRef(null); // tracks last saved lesson ID for post-compression DB update
 
     useEffect(() => {
         socket.emit('join_class', 'class-8a');
@@ -60,20 +64,42 @@ export default function TeacherDashboard({ user }) {
         });
         socket.on('presence:online_count', (data) => setOnlineCount(data.count));
         socket.on('presence:user_joined', (data) => setActivityFeed(prev => [{ text: `${data.name} joined the class`, time: Date.now() }, ...prev].slice(0, 20)));
-        socket.on('chat:message', (msg) => setChatMessages(prev => [...prev, msg]));
+        socket.on('chat:message', (msg) => setChatMessages(prev => {
+            if (prev.some(m => m._id === msg._id)) return prev;
+            return [...prev, msg];
+        }));
         socket.on('quiz:submission_received', (data) => setActivityFeed(prev => [{ text: `A student submitted their quiz`, time: Date.now() }, ...prev].slice(0, 20)));
 
-        // Video compression events
-        socket.on('video:compression_progress', (data) => {
-            setCompressionProgress(data.progress || 0);
+        // Real-time notifications — also refresh data when new content is added
+        socket.on('notification:new', (notif) => {
+            setNotifications(prev => [{ ...notif, read: false }, ...prev]);
+            if (notif.type === 'quiz') {
+                fetch(`${API}/quizzes`).then(r => r.json()).then(data => {
+                    if (Array.isArray(data)) setQuizzes(data);
+                }).catch(() => {});
+            }
+            if (notif.type === 'lesson') {
+                fetch(`${API}/lessons`).then(r => r.json()).then(data => {
+                    if (Array.isArray(data)) setLessons(data);
+                }).catch(() => {});
+            }
         });
+
         socket.on('video:compressed', (data) => {
             setCompressionStatus('done');
-            setCompressionProgress(100);
-            setCompressedVideoUrl(data.compressedUrl);
             setLessonForm(prev => ({ ...prev, contentUrl: data.compressedUrl }));
+            // Patch lesson in DB with Cloudinary URL if lesson was already saved
+            if (savedLessonIdRef.current) {
+                fetch(`${API}/lessons/${savedLessonIdRef.current}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ contentUrl: data.compressedUrl, compressedContentUrl: data.compressedUrl, compressionStatus: 'done' }),
+                }).then(r => r.json()).then(updated => {
+                    setLessons(prev => prev.map(l => l._id === updated._id ? updated : l));
+                }).catch(() => { });
+            }
         });
-        socket.on('video:compression_error', (data) => {
+        socket.on('video:compression_error', () => {
             setCompressionStatus('error');
         });
 
@@ -85,17 +111,39 @@ export default function TeacherDashboard({ user }) {
         fetch(`${API}/lessons`).then(r => r.json()).then(setLessons).catch(() => { });
         fetch(`${API}/quizzes`).then(r => r.json()).then(setQuizzes).catch(() => { });
         fetch(`${API}/chat/class-8a`).then(r => r.json()).then(setChatMessages).catch(() => { });
+        fetch(`${API}/notifications?role=teacher&userId=${user?._id || ''}`).then(r => r.json()).then(data => {
+            if (Array.isArray(data)) setNotifications(data);
+        }).catch(() => {});
 
-        // Seed some demo students
-        setStudents([
-            { studentId: 's1', studentName: 'Aarav Sharma', score: 72, status: 'online', chapter: 'Math Ch.4' },
-            { studentId: 's2', studentName: 'Simran Kaur', score: 88, status: 'online', chapter: 'Math Ch.5' },
-            { studentId: 's3', studentName: 'Ravi Singh', score: 45, status: 'offline', chapter: 'Math Ch.3' },
-            { studentId: 's4', studentName: 'Priya Patel', score: 91, status: 'online', chapter: 'Math Ch.5' },
-            { studentId: 's5', studentName: 'Gurpreet Kaur', score: 65, status: 'offline', chapter: 'Math Ch.4' },
-        ]);
+        // Fetch real students from the database
+        fetch(`${API}/users/students`).then(r => r.json()).then(data => {
+            if (Array.isArray(data)) {
+                const mappedStudents = data.map(u => {
+                    const latestScore = u.progress && u.progress.length > 0 ? u.progress[0].score : 0;
+                    return {
+                        studentId: u._id,
+                        studentName: u.name,
+                        score: latestScore,
+                        status: 'offline', // default, socket will update if online
+                        chapter: '-'
+                    };
+                });
+                setStudents(mappedStudents);
+            }
+        }).catch(() => { });
 
-        return () => { window.removeEventListener('online', goOnline); window.removeEventListener('offline', goOffline); };
+        return () => {
+            socket.off('chat:message');
+            socket.off('update_teacher_dashboard');
+            socket.off('presence:online_count');
+            socket.off('presence:user_joined');
+            socket.off('quiz:submission_received');
+            socket.off('video:compressed');
+            socket.off('video:compression_error');
+            socket.off('notification:new');
+            window.removeEventListener('online', goOnline);
+            window.removeEventListener('offline', goOffline);
+        };
     }, []);
 
     useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages]);
@@ -105,7 +153,7 @@ export default function TeacherDashboard({ user }) {
 
     const handleFileUpload = async (file, type) => {
         setIsUploading(true); setUploadType(type); setUploadProgress(0);
-        if (type === 'video') { setCompressionStatus(''); setCompressionProgress(0); setCompressedVideoUrl(''); }
+        if (type === 'video') setCompressionStatus('idle');
         const formData = new FormData();
         formData.append('file', file);
         try {
@@ -114,28 +162,35 @@ export default function TeacherDashboard({ user }) {
             await new Promise((resolve, reject) => {
                 xhr.onload = () => {
                     const data = JSON.parse(xhr.responseText);
-                    setLessonForm(prev => ({ ...prev, [type === 'video' ? 'contentUrl' : 'pdfUrl']: data.fileUrl }));
-                    // If video, the backend returns status:'processing' and starts compression in background
-                    if (type === 'video' && data.status === 'processing') {
+                    if (data.status === 'processing') {
+                        // Video is being compressed & uploaded to Cloudinary — URL will arrive via socket
                         setCompressionStatus('processing');
+                    } else {
+                        // Non-video file (PDF/image) — Cloudinary URL returned directly
+                        setLessonForm(prev => ({ ...prev, [type === 'video' ? 'contentUrl' : 'pdfUrl']: data.fileUrl }));
                     }
                     resolve();
                 };
                 xhr.onerror = reject;
-                xhr.open('POST', `${API}/upload`); xhr.send(formData);
+                xhr.open('POST', `${API}/upload`);
+                xhr.setRequestHeader('x-socket-id', socket.id || '');
+                xhr.send(formData);
             });
         } catch (e) { alert('Upload failed'); }
         setIsUploading(false); setUploadProgress(0); setUploadType('');
     };
 
-    const handleCreateLesson = async () => {
+    const handleCreateLesson = async (publishOverride) => {
         if (!lessonForm.title || lessonForm.title.length < 3) { alert('Title must be at least 3 characters'); return; }
         try {
             const tags = lessonForm.tags ? lessonForm.tags.split(',').map(t => t.trim()).filter(Boolean) : [];
             const method = editingLesson ? 'PUT' : 'POST';
             const url = editingLesson ? `${API}/lessons/${editingLesson._id}` : `${API}/lessons`;
-            const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...lessonForm, tags, createdBy: user?._id }) });
+            const payload = { ...lessonForm, tags, createdBy: user?._id, createdByName: user?.name || 'Teacher' };
+            if (publishOverride !== undefined) payload.isPublished = publishOverride;
+            const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             const saved = await res.json();
+            savedLessonIdRef.current = saved._id;
             if (editingLesson) { setLessons(prev => prev.map(l => l._id === saved._id ? saved : l)); } else { setLessons(prev => [saved, ...prev]); }
             setShowLessonBuilder(false); setEditingLesson(null);
             setLessonForm({ title: '', subject: 'Mathematics', grade: '8', language: 'English', description: '', contentUrl: '', pdfUrl: '', duration: 30, isPublished: false, isDownloadable: true, tags: '' });
@@ -172,7 +227,7 @@ export default function TeacherDashboard({ user }) {
     const handleCreateQuiz = async (launchLive = false) => {
         const totalPoints = quizForm.questions.reduce((a, q) => a + q.points, 0);
         try {
-            const res = await fetch(`${API}/quizzes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...quizForm, totalPoints, createdBy: user?._id }) });
+            const res = await fetch(`${API}/quizzes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...quizForm, totalPoints, createdBy: user?._id, createdByName: user?.name || 'Teacher' }) });
             const newQuiz = await res.json();
             setQuizzes(prev => [newQuiz, ...prev]);
             setShowQuizBuilder(false);
@@ -200,7 +255,7 @@ export default function TeacherDashboard({ user }) {
 
     const handleBroadcast = () => {
         if (!announcement.title.trim() || !announcement.body.trim()) return;
-        socket.emit('class:announce', { roomId: 'class-8a', title: announcement.title, body: announcement.body });
+        socket.emit('class:announce', { roomId: 'class-8a', title: announcement.title, body: announcement.body, teacherName: user?.name || 'Teacher' });
         setChatMessages(prev => [...prev, { _id: `ann-${Date.now()}`, senderName: user?.name, senderRole: 'teacher', text: `📢 ${announcement.title}: ${announcement.body}`, type: 'announcement', timestamp: new Date() }]);
         setShowAnnouncement(false);
         setAnnouncement({ title: '', body: '' });
@@ -243,29 +298,9 @@ export default function TeacherDashboard({ user }) {
                             <input type="file" accept="video/mp4" className="hidden" onChange={e => e.target.files[0] && handleFileUpload(e.target.files[0], 'video')} />
                         </label>
                         {isUploading && uploadType === 'video' && <div className="w-full bg-slate-700 rounded-full h-2"><div className="bg-indigo-500 h-2 rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%` }} /></div>}
-                        {/* Video Compression Status Indicator */}
-                        {compressionStatus === 'processing' && (
-                            <div className="bg-indigo-900/30 border border-indigo-500/20 rounded-xl p-3 space-y-2">
-                                <div className="flex items-center gap-2">
-                                    <span className="w-2 h-2 bg-indigo-400 rounded-full animate-pulse"></span>
-                                    <p className="text-xs font-bold text-indigo-300">⏳ Compressing video... {compressionProgress > 0 ? `${compressionProgress}%` : ''}</p>
-                                </div>
-                                {compressionProgress > 0 && <div className="w-full bg-slate-700 rounded-full h-1.5"><div className="bg-indigo-400 h-1.5 rounded-full transition-all duration-500" style={{ width: `${compressionProgress}%` }} /></div>}
-                                <p className="text-[9px] text-slate-500">Optimizing for mobile (480p). Raw video available meanwhile.</p>
-                            </div>
-                        )}
-                        {compressionStatus === 'done' && (
-                            <div className="bg-emerald-900/20 border border-emerald-500/20 rounded-xl p-3">
-                                <p className="text-xs font-bold text-emerald-400">✅ Video compressed successfully!</p>
-                                <p className="text-[9px] text-slate-500">Optimized for mobile streaming (480p, H.264).</p>
-                            </div>
-                        )}
-                        {compressionStatus === 'error' && (
-                            <div className="bg-amber-900/20 border border-amber-500/20 rounded-xl p-3">
-                                <p className="text-xs font-bold text-amber-400">⚠️ Compression skipped — raw video will be used</p>
-                                <p className="text-[9px] text-slate-500">Ensure FFmpeg is installed on the server for compression.</p>
-                            </div>
-                        )}
+                        {compressionStatus === 'processing' && <p className="text-[11px] text-amber-400 font-bold animate-pulse text-center">⏳ Compressing video for low-bandwidth devices...</p>}
+                        {compressionStatus === 'done' && <p className="text-[11px] text-emerald-400 font-bold text-center">✅ Video compressed and ready!</p>}
+                        {compressionStatus === 'error' && <p className="text-[11px] text-red-400 font-bold text-center">⚠️ Compression failed — raw video will be used</p>}
                         <p className="text-[10px] text-slate-600 font-semibold text-center">— or paste a URL —</p>
                         <input value={lessonForm.contentUrl} onChange={e => setLessonForm({ ...lessonForm, contentUrl: e.target.value })} className="w-full p-3 bg-slate-900 border border-white/10 rounded-xl text-white font-semibold text-sm focus:border-indigo-500 outline-none" placeholder="YouTube or direct video URL..." />
                         {lessonForm.contentUrl && <p className="text-[10px] text-emerald-400 font-bold">✓ Video attached</p>}
@@ -290,8 +325,8 @@ export default function TeacherDashboard({ user }) {
                     </div>
                     {/* Action Buttons */}
                     <div className="flex gap-3 pt-2">
-                        <button onClick={() => { setLessonForm({ ...lessonForm, isPublished: false }); handleCreateLesson(); }} className="flex-1 py-4 bg-slate-700 text-white font-bold text-sm rounded-xl">{editingLesson ? 'Save Changes' : 'Save as Draft'}</button>
-                        <button onClick={() => { setLessonForm({ ...lessonForm, isPublished: true }); handleCreateLesson(); }} disabled={isUploading} className="flex-1 py-4 bg-indigo-600 text-white font-bold text-sm rounded-xl hover:bg-indigo-500 active:scale-95 transition-all disabled:opacity-40">Publish Now</button>
+                        <button onClick={() => handleCreateLesson(false)} className="flex-1 py-4 bg-slate-700 text-white font-bold text-sm rounded-xl">{editingLesson ? 'Save Changes' : 'Save as Draft'}</button>
+                        <button onClick={() => handleCreateLesson(true)} disabled={isUploading} className="flex-1 py-4 bg-indigo-600 text-white font-bold text-sm rounded-xl hover:bg-indigo-500 active:scale-95 transition-all disabled:opacity-40">Publish Now</button>
                     </div>
                 </div>
             </div>
@@ -430,11 +465,58 @@ export default function TeacherDashboard({ user }) {
                         </div>
                         <p className="text-xs text-slate-400 font-semibold">Teacher Dashboard · <span className={`${isOnline ? 'text-emerald-400' : 'text-amber-400'}`}>{isOnline ? '🟢' : '🟡'}</span></p>
                     </div>
-                    <div className="flex items-center gap-2">
-                        <button className="relative p-2 bg-slate-800 border border-white/10 rounded-full"><svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg><span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></span></button>
+                    <div className="flex items-center gap-2 relative">
+                        <button onClick={() => setShowNotifications(!showNotifications)} className="relative p-2 bg-slate-800 border border-white/10 rounded-full">
+                            <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
+                            {notifications.filter(n => !n.read).length > 0 && (
+                                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] bg-red-500 rounded-full text-[10px] font-bold flex items-center justify-center px-1">{notifications.filter(n => !n.read).length}</span>
+                            )}
+                        </button>
                     </div>
                 </div>
             </header>
+
+            {/* ──── NOTIFICATION PANEL ──── */}
+            {showNotifications && (
+                <div className="fixed inset-0 z-50 bg-black/60" onClick={() => setShowNotifications(false)}>
+                    <div className="absolute top-16 right-4 w-[calc(100%-2rem)] max-w-sm bg-slate-900 border border-white/10 rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+                        <div className="flex justify-between items-center px-4 py-3 border-b border-white/5">
+                            <h3 className="text-sm font-extrabold text-white">Notifications</h3>
+                            {notifications.filter(n => !n.read).length > 0 && (
+                                <button onClick={() => {
+                                    fetch(`${API}/notifications/read-all`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: user?._id }) }).catch(() => {});
+                                    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+                                }} className="text-[10px] font-bold text-violet-400 hover:text-violet-300">Mark all read</button>
+                            )}
+                        </div>
+                        <div className="max-h-80 overflow-y-auto divide-y divide-white/5">
+                            {notifications.length === 0 && (
+                                <div className="p-6 text-center text-slate-500 text-sm font-semibold">No notifications yet</div>
+                            )}
+                            {notifications.map((notif, i) => (
+                                <button key={notif._id || i} className={`w-full text-left px-4 py-3 hover:bg-slate-800/80 transition-colors ${!notif.read ? 'bg-violet-950/30' : ''}`}
+                                    onClick={() => {
+                                        if (!notif.read) {
+                                            fetch(`${API}/notifications/${notif._id}/read`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: user?._id }) }).catch(() => {});
+                                            setNotifications(prev => prev.map(n => n._id === notif._id ? { ...n, read: true } : n));
+                                        }
+                                        setShowNotifications(false);
+                                    }}>
+                                    <div className="flex items-start gap-3">
+                                        <span className="text-lg mt-0.5">{notif.type === 'lesson' ? '📚' : notif.type === 'quiz' ? '✏️' : notif.type === 'announcement' ? '📢' : '🔔'}</span>
+                                        <div className="flex-1 min-w-0">
+                                            <p className={`text-sm font-bold ${!notif.read ? 'text-white' : 'text-slate-300'} truncate`}>{notif.title}</p>
+                                            <p className="text-xs text-slate-400 mt-0.5 line-clamp-2">{notif.message}</p>
+                                            <p className="text-[10px] text-slate-600 mt-1 font-semibold">{new Date(notif.createdAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>
+                                        </div>
+                                        {!notif.read && <div className="w-2 h-2 bg-violet-500 rounded-full mt-2 shrink-0"></div>}
+                                    </div>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <main className="px-5 pt-5 space-y-6 pb-4">
 
@@ -587,17 +669,17 @@ export default function TeacherDashboard({ user }) {
 
                         {/* Summary Cards — 2x2 grid */}
                         <div className="grid grid-cols-2 gap-3">
-                            <div className="bg-slate-800 rounded-2xl p-4 border border-white/5">
+                            <div onClick={() => setAnalyticsCardFilter('all')} className={`rounded-2xl p-4 border cursor-pointer transition-all ${analyticsCardFilter === 'all' ? 'bg-slate-700 border-indigo-500' : 'bg-slate-800 border-white/5 hover:bg-slate-750 hover:border-white/10'}`}>
                                 <p className="text-[10px] font-extrabold uppercase text-slate-500 mb-1">Avg Quiz Score</p>
                                 <p className={`text-3xl font-black ${avgScore >= 70 ? 'text-emerald-400' : avgScore >= 50 ? 'text-amber-400' : 'text-red-400'}`}>{avgScore}%</p>
-                                <div className="w-full bg-slate-700 rounded-full h-1.5 mt-2"><div className={`h-1.5 rounded-full ${avgScore >= 70 ? 'bg-emerald-500' : avgScore >= 50 ? 'bg-amber-500' : 'bg-red-500'}`} style={{ width: `${avgScore}%` }} /></div>
+                                <div className="w-full bg-slate-700/50 rounded-full h-1.5 mt-2"><div className={`h-1.5 rounded-full ${avgScore >= 70 ? 'bg-emerald-500' : avgScore >= 50 ? 'bg-amber-500' : 'bg-red-500'}`} style={{ width: `${avgScore}%` }} /></div>
                             </div>
-                            <div className="bg-slate-800 rounded-2xl p-4 border border-white/5">
+                            <div onClick={() => setAnalyticsCardFilter('risk')} className={`rounded-2xl p-4 border cursor-pointer transition-all ${analyticsCardFilter === 'risk' ? 'bg-slate-700 border-indigo-500' : 'bg-slate-800 border-white/5 hover:bg-slate-750 hover:border-white/10'}`}>
                                 <p className="text-[10px] font-extrabold uppercase text-slate-500 mb-1">At-Risk Students</p>
                                 <p className="text-3xl font-black text-rose-400">{students.filter(s => s.score < 50).length}</p>
                                 <p className="text-[10px] text-slate-500 mt-1">Below 50% quiz avg</p>
                             </div>
-                            <div className="bg-slate-800 rounded-2xl p-4 border border-white/5">
+                            <div onClick={() => setAnalyticsCardFilter('active')} className={`rounded-2xl p-4 border cursor-pointer transition-all ${analyticsCardFilter === 'active' ? 'bg-slate-700 border-indigo-500' : 'bg-slate-800 border-white/5 hover:bg-slate-750 hover:border-white/10'}`}>
                                 <p className="text-[10px] font-extrabold uppercase text-slate-500 mb-1">Active Students</p>
                                 <p className="text-3xl font-black text-violet-400">{onlineStudents}</p>
                                 <p className="text-[10px] text-slate-500 mt-1">Active this session</p>
@@ -672,29 +754,39 @@ export default function TeacherDashboard({ user }) {
                         {/* Per Student Progress Table */}
                         <div>
                             <div className="flex items-center justify-between mb-2">
-                                <p className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">Per-Student Progress</p>
+                                <p className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                                    {analyticsCardFilter === 'all' ? 'All Students' : analyticsCardFilter === 'risk' ? 'At-Risk Students' : 'Active Students'}
+                                    {searchStudent && ' (Filtered)'}
+                                </p>
                                 <input value={searchStudent} onChange={e => setSearchStudent(e.target.value)} className="px-3 py-1.5 bg-slate-800 border border-white/10 rounded-lg text-white text-[10px] font-semibold focus:border-indigo-500 outline-none w-32" placeholder="Search..." />
                             </div>
                             <div className="space-y-2">
-                                {students.filter(s => s.studentName?.toLowerCase().includes(searchStudent.toLowerCase())).map((s, i) => (
-                                    <div key={i} className="bg-slate-800 rounded-xl p-3 border border-white/5 flex items-center justify-between">
-                                        <div className="flex items-center gap-3">
-                                            <div className="relative">
-                                                <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-[10px] font-bold">{s.studentName?.split(' ').map(n => n[0]).join('')}</div>
-                                                <span className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-slate-800 ${s.status === 'online' ? 'bg-emerald-400' : 'bg-slate-500'}`}></span>
+                                {students
+                                    .filter(s => {
+                                        if (analyticsCardFilter === 'risk' && s.score >= 50) return false;
+                                        if (analyticsCardFilter === 'active' && s.status !== 'online') return false;
+                                        return true;
+                                    })
+                                    .filter(s => s.studentName?.toLowerCase().includes(searchStudent.toLowerCase()))
+                                    .map((s, i) => (
+                                        <div key={i} className="bg-slate-800 rounded-xl p-3 border border-white/5 flex items-center justify-between">
+                                            <div className="flex items-center gap-3">
+                                                <div className="relative">
+                                                    <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-[10px] font-bold">{s.studentName?.split(' ').map(n => n[0]).join('')}</div>
+                                                    <span className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-slate-800 ${s.status === 'online' ? 'bg-emerald-400' : 'bg-slate-500'}`}></span>
+                                                </div>
+                                                <div>
+                                                    <p className="text-sm font-bold">{s.studentName}</p>
+                                                    <p className="text-[10px] text-slate-500">{s.chapter}</p>
+                                                </div>
                                             </div>
-                                            <div>
-                                                <p className="text-sm font-bold">{s.studentName}</p>
-                                                <p className="text-[10px] text-slate-500">{s.chapter}</p>
+                                            <div className="flex items-center gap-3">
+                                                <span className={`text-[9px] font-extrabold px-2 py-0.5 rounded-full ${s.score >= 70 ? 'bg-emerald-500/10 text-emerald-400' : s.score >= 50 ? 'bg-amber-500/10 text-amber-400' : 'bg-red-500/10 text-red-400'}`}>{s.score >= 70 ? '🟢 On Track' : s.score >= 50 ? '🟡 Attention' : '🔴 At Risk'}</span>
+                                                <div className="w-16"><div className="w-full bg-slate-700 rounded-full h-1.5"><div className={`h-1.5 rounded-full ${s.score >= 70 ? 'bg-emerald-500' : s.score >= 50 ? 'bg-amber-500' : 'bg-red-500'}`} style={{ width: `${s.score}%` }} /></div></div>
+                                                <p className={`text-sm font-extrabold ${s.score >= 70 ? 'text-emerald-400' : s.score >= 50 ? 'text-amber-400' : 'text-red-400'}`}>{s.score}%</p>
                                             </div>
                                         </div>
-                                        <div className="flex items-center gap-3">
-                                            <span className={`text-[9px] font-extrabold px-2 py-0.5 rounded-full ${s.score >= 70 ? 'bg-emerald-500/10 text-emerald-400' : s.score >= 50 ? 'bg-amber-500/10 text-amber-400' : 'bg-red-500/10 text-red-400'}`}>{s.score >= 70 ? '🟢 On Track' : s.score >= 50 ? '🟡 Attention' : '🔴 At Risk'}</span>
-                                            <div className="w-16"><div className="w-full bg-slate-700 rounded-full h-1.5"><div className={`h-1.5 rounded-full ${s.score >= 70 ? 'bg-emerald-500' : s.score >= 50 ? 'bg-amber-500' : 'bg-red-500'}`} style={{ width: `${s.score}%` }} /></div></div>
-                                            <p className={`text-sm font-extrabold ${s.score >= 70 ? 'text-emerald-400' : s.score >= 50 ? 'text-amber-400' : 'text-red-400'}`}>{s.score}%</p>
-                                        </div>
-                                    </div>
-                                ))}
+                                    ))}
                             </div>
                         </div>
                     </div>

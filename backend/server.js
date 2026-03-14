@@ -12,6 +12,9 @@ dotenv.config();
 const connectDB = require('./config/db');
 connectDB().catch(err => console.log('Mongodb connect deferred. Please add valid URI to .env'));
 
+// Video Compression Pipeline
+const { setIO } = require('./services/videoCompressor');
+
 const app = express();
 const server = http.createServer(app);
 
@@ -35,13 +38,18 @@ app.use('/api/quizzes', require('./routes/quizRoutes'));
 app.use('/api/chat', require('./routes/chatRoutes'));
 app.use('/api/upload', require('./routes/uploadRoutes'));
 
-// Serve uploaded content
+// Serve uploaded content (legacy, raw, and compressed)
 app.use('/uploads', express.static(path.join(__dirname, 'public/uploads')));
+app.use('/uploads/raw', express.static(path.join(__dirname, 'public/uploads/raw')));
+app.use('/uploads/compressed', express.static(path.join(__dirname, 'public/uploads/compressed')));
 
 // Basic health check route
 app.get('/', (req, res) => {
     res.send('Vidya Setu API is Running...');
 });
+
+// Pass Socket.IO to the video compressor so it can emit real-time events
+setIO(io);
 
 // Socket.io Connection Logic — Full Real-time System (Spec 30)
 io.on('connection', (socket) => {

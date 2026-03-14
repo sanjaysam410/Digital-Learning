@@ -20,6 +20,11 @@ export default function TeacherDashboard({ user }) {
     const [isUploading, setIsUploading] = useState(false);
     const [uploadType, setUploadType] = useState('');
 
+    // Video Compression State
+    const [compressionStatus, setCompressionStatus] = useState(''); // '' | 'processing' | 'done' | 'error'
+    const [compressionProgress, setCompressionProgress] = useState(0);
+    const [compressedVideoUrl, setCompressedVideoUrl] = useState('');
+
     // Lesson Builder State
     const [showLessonBuilder, setShowLessonBuilder] = useState(false);
     const [editingLesson, setEditingLesson] = useState(null);
@@ -58,6 +63,20 @@ export default function TeacherDashboard({ user }) {
         socket.on('chat:message', (msg) => setChatMessages(prev => [...prev, msg]));
         socket.on('quiz:submission_received', (data) => setActivityFeed(prev => [{ text: `A student submitted their quiz`, time: Date.now() }, ...prev].slice(0, 20)));
 
+        // Video compression events
+        socket.on('video:compression_progress', (data) => {
+            setCompressionProgress(data.progress || 0);
+        });
+        socket.on('video:compressed', (data) => {
+            setCompressionStatus('done');
+            setCompressionProgress(100);
+            setCompressedVideoUrl(data.compressedUrl);
+            setLessonForm(prev => ({ ...prev, contentUrl: data.compressedUrl }));
+        });
+        socket.on('video:compression_error', (data) => {
+            setCompressionStatus('error');
+        });
+
         const goOnline = () => setIsOnline(true);
         const goOffline = () => setIsOnline(false);
         window.addEventListener('online', goOnline);
@@ -86,13 +105,22 @@ export default function TeacherDashboard({ user }) {
 
     const handleFileUpload = async (file, type) => {
         setIsUploading(true); setUploadType(type); setUploadProgress(0);
+        if (type === 'video') { setCompressionStatus(''); setCompressionProgress(0); setCompressedVideoUrl(''); }
         const formData = new FormData();
         formData.append('file', file);
         try {
             const xhr = new XMLHttpRequest();
             xhr.upload.onprogress = (e) => { if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100)); };
             await new Promise((resolve, reject) => {
-                xhr.onload = () => { const data = JSON.parse(xhr.responseText); setLessonForm(prev => ({ ...prev, [type === 'video' ? 'contentUrl' : 'pdfUrl']: data.fileUrl })); resolve(); };
+                xhr.onload = () => {
+                    const data = JSON.parse(xhr.responseText);
+                    setLessonForm(prev => ({ ...prev, [type === 'video' ? 'contentUrl' : 'pdfUrl']: data.fileUrl }));
+                    // If video, the backend returns status:'processing' and starts compression in background
+                    if (type === 'video' && data.status === 'processing') {
+                        setCompressionStatus('processing');
+                    }
+                    resolve();
+                };
                 xhr.onerror = reject;
                 xhr.open('POST', `${API}/upload`); xhr.send(formData);
             });
@@ -215,6 +243,29 @@ export default function TeacherDashboard({ user }) {
                             <input type="file" accept="video/mp4" className="hidden" onChange={e => e.target.files[0] && handleFileUpload(e.target.files[0], 'video')} />
                         </label>
                         {isUploading && uploadType === 'video' && <div className="w-full bg-slate-700 rounded-full h-2"><div className="bg-indigo-500 h-2 rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%` }} /></div>}
+                        {/* Video Compression Status Indicator */}
+                        {compressionStatus === 'processing' && (
+                            <div className="bg-indigo-900/30 border border-indigo-500/20 rounded-xl p-3 space-y-2">
+                                <div className="flex items-center gap-2">
+                                    <span className="w-2 h-2 bg-indigo-400 rounded-full animate-pulse"></span>
+                                    <p className="text-xs font-bold text-indigo-300">⏳ Compressing video... {compressionProgress > 0 ? `${compressionProgress}%` : ''}</p>
+                                </div>
+                                {compressionProgress > 0 && <div className="w-full bg-slate-700 rounded-full h-1.5"><div className="bg-indigo-400 h-1.5 rounded-full transition-all duration-500" style={{ width: `${compressionProgress}%` }} /></div>}
+                                <p className="text-[9px] text-slate-500">Optimizing for mobile (480p). Raw video available meanwhile.</p>
+                            </div>
+                        )}
+                        {compressionStatus === 'done' && (
+                            <div className="bg-emerald-900/20 border border-emerald-500/20 rounded-xl p-3">
+                                <p className="text-xs font-bold text-emerald-400">✅ Video compressed successfully!</p>
+                                <p className="text-[9px] text-slate-500">Optimized for mobile streaming (480p, H.264).</p>
+                            </div>
+                        )}
+                        {compressionStatus === 'error' && (
+                            <div className="bg-amber-900/20 border border-amber-500/20 rounded-xl p-3">
+                                <p className="text-xs font-bold text-amber-400">⚠️ Compression skipped — raw video will be used</p>
+                                <p className="text-[9px] text-slate-500">Ensure FFmpeg is installed on the server for compression.</p>
+                            </div>
+                        )}
                         <p className="text-[10px] text-slate-600 font-semibold text-center">— or paste a URL —</p>
                         <input value={lessonForm.contentUrl} onChange={e => setLessonForm({ ...lessonForm, contentUrl: e.target.value })} className="w-full p-3 bg-slate-900 border border-white/10 rounded-xl text-white font-semibold text-sm focus:border-indigo-500 outline-none" placeholder="YouTube or direct video URL..." />
                         {lessonForm.contentUrl && <p className="text-[10px] text-emerald-400 font-bold">✓ Video attached</p>}

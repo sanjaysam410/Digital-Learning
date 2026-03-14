@@ -14,6 +14,12 @@ const lessonSchema = new mongoose.Schema({
     pdfUrl: { type: String, default: '' },
     thumbnailUrl: { type: String, default: '' },
     duration: { type: Number, default: 0 },
+    compressionStatus: {
+        type: String,
+        enum: ['none', 'processing', 'done', 'error'],
+        default: 'none',
+    },
+    compressedContentUrl: { type: String, default: '' },
     quizId: { type: mongoose.Schema.Types.ObjectId, ref: 'Quiz' },
     tags: [String],
     isPublished: { type: Boolean, default: false },

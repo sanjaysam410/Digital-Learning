@@ -12,6 +12,9 @@ export default function Login({ onLogin }) {
     const [showPassword, setShowPassword] = useState(false);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
+    const [otp, setOtp] = useState('');
+    const [otpSent, setOtpSent] = useState(false);
+    const [sendingOtp, setSendingOtp] = useState(false);
     const [showServerConfig, setShowServerConfig] = useState(false);
     const [serverUrl, setServerUrl] = useState(localStorage.getItem('serverUrl') || '');
     const [serverSaved, setServerSaved] = useState(false);
@@ -33,7 +36,7 @@ export default function Login({ onLogin }) {
         e.preventDefault();
         setLoading(true); setError('');
         const url = isLogin ? `${API}/login` : API;
-        const body = isLogin ? { email, password } : { name, email, password, role };
+        const body = isLogin ? { email, password } : { name, email, password, role, otp };
         try {
             const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
             const data = await res.json();
@@ -99,12 +102,39 @@ export default function Login({ onLogin }) {
         finally { setLoading(false); }
     };
 
-    const testLogin = (testRole) => {
-        setIsLogin(true); setRole(testRole);
-        if (testRole === 'student') { setEmail('aarav@student.nabha.edu'); }
-        else if (testRole === 'teacher') { setEmail('teacher@nabha.edu'); }
-        else { setEmail('admin@nabha.edu'); }
-        setPassword('password123');
+    const handleSendOtp = async () => {
+        if (!email) {
+            setError('Please enter your email first.');
+            return;
+        }
+        setSendingOtp(true); setError('');
+        try {
+            const res = await fetch(`${API}/send-otp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }) });
+            
+            if (res.status === 404) {
+                setError('Backend route not found. Please restart your Node server!');
+                return;
+            }
+
+            let data;
+            try {
+                data = await res.json();
+            } catch (jsonErr) {
+                throw new Error('Server returned invalid response (possibly HTML)');
+            }
+
+            if (res.ok || (data.message && data.message.includes('mocked'))) {
+                setOtpSent(true);
+                alert(`OTP sent to ${email}.\nFor this demo, check the backend terminal console for the code!`);
+            } else {
+                setError(data.message || 'Failed to send OTP');
+            }
+        } catch (err) {
+            console.error('OTP Send Error:', err);
+            setError(err.message === 'Failed to fetch' ? 'Network connection refused. Is the server running?' : `Error: ${err.message}`);
+        } finally {
+            setSendingOtp(false);
+        }
     };
 
     return (
@@ -129,32 +159,69 @@ export default function Login({ onLogin }) {
                 {error && <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-center"><p className="text-red-400 text-sm font-semibold">{error}</p></div>}
 
                 <form onSubmit={handleSubmit} className="space-y-4">
-                    {!isLogin && (
-                        <div>
-                            <label className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 block mb-1.5">Full Name</label>
-                            <input type="text" value={name} onChange={e => setName(e.target.value)} required
-                                className="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-3.5 text-white font-semibold text-sm focus:border-indigo-500 outline-none transition-colors" placeholder="Enter your full name" />
-                        </div>
-                    )}
-                    <div>
-                        <label className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 block mb-1.5">{role === 'student' ? 'School ID or Email' : 'Teacher ID or Email'}</label>
-                        <input type="text" value={email} onChange={e => setEmail(e.target.value)} required
-                            className="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-3.5 text-white font-semibold text-sm focus:border-indigo-500 outline-none transition-colors" placeholder={role === 'student' ? 'School ID or Email' : 'Teacher ID or Email'} />
-                    </div>
-                    <div>
-                        <label className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 block mb-1.5">Password</label>
-                        <div className="relative">
-                            <input type={showPassword ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} required
-                                className="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-3.5 text-white font-semibold text-sm focus:border-indigo-500 outline-none transition-colors pr-12" placeholder="Password" />
-                            <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-3.5 text-slate-500 text-lg">{showPassword ? '🙈' : '👁'}</button>
-                        </div>
-                    </div>
-                    {isLogin && <p className="text-right"><button type="button" className="text-sm font-semibold text-indigo-400 hover:text-indigo-300">Forgot password?</button></p>}
+                    {isLogin ? (
+                        <>
+                            <div>
+                                <label className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 block mb-1.5">{role === 'student' ? 'School ID or Email' : 'Teacher ID or Email'}</label>
+                                <input type="text" value={email} onChange={e => setEmail(e.target.value)} required
+                                    className="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-3.5 text-white font-semibold text-sm focus:border-indigo-500 outline-none transition-colors" placeholder={role === 'student' ? 'School ID or Email' : 'Teacher ID or Email'} />
+                            </div>
+                            <div>
+                                <label className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 block mb-1.5">Password</label>
+                                <div className="relative">
+                                    <input type={showPassword ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} required
+                                        className="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-3.5 text-white font-semibold text-sm focus:border-indigo-500 outline-none transition-colors pr-12" placeholder="Password" />
+                                    <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-3.5 text-slate-500 text-lg">{showPassword ? '🙈' : '👁'}</button>
+                                </div>
+                            </div>
+                            <p className="text-right"><button type="button" className="text-sm font-semibold text-indigo-400 hover:text-indigo-300">Forgot password?</button></p>
 
-                    <button type="submit" disabled={loading}
-                        className={`w-full py-4 rounded-xl font-extrabold text-sm transition-all ${loading ? 'bg-slate-700 text-slate-400' : 'bg-indigo-600 hover:bg-indigo-500 text-white active:scale-[0.98]'}`}>
-                        {loading ? <span className="animate-pulse">Signing in...</span> : isLogin ? 'Sign In →' : 'Create Account →'}
-                    </button>
+                            <button type="submit" disabled={loading}
+                                className={`w-full py-4 rounded-xl font-extrabold text-sm transition-all ${loading ? 'bg-slate-700 text-slate-400' : 'bg-indigo-600 hover:bg-indigo-500 text-white active:scale-[0.98]'}`}>
+                                {loading ? <span className="animate-pulse">Signing in...</span> : 'Sign In →'}
+                            </button>
+                        </>
+                    ) : (
+                        <>
+                            <div>
+                                <label className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 block mb-1.5">Email Address</label>
+                                <input type="email" value={email} onChange={e => setEmail(e.target.value)} required disabled={otpSent}
+                                    className="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-3.5 text-white font-semibold text-sm focus:border-indigo-500 outline-none transition-colors disabled:opacity-50" placeholder="Enter your email" />
+                            </div>
+
+                            {!otpSent ? (
+                                <button type="button" onClick={handleSendOtp} disabled={sendingOtp}
+                                    className={`w-full py-4 rounded-xl font-extrabold text-sm transition-all ${sendingOtp ? 'bg-slate-700 text-slate-400' : 'bg-indigo-600 hover:bg-indigo-500 text-white active:scale-[0.98]'}`}>
+                                    {sendingOtp ? <span className="animate-pulse">Sending OTP...</span> : 'Send OTP →'}
+                                </button>
+                            ) : (
+                                <>
+                                    <div>
+                                        <label className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-500 block mb-1.5">Enter 6-Digit OTP</label>
+                                        <input type="text" value={otp} onChange={e => setOtp(e.target.value)} required maxLength="6"
+                                            className="w-full bg-slate-800 border border-emerald-500/50 rounded-xl px-4 py-3.5 text-white font-semibold text-sm focus:border-emerald-500 outline-none transition-colors tracking-widest text-center" placeholder="123456" />
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 block mb-1.5">Full Name</label>
+                                        <input type="text" value={name} onChange={e => setName(e.target.value)} required
+                                            className="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-3.5 text-white font-semibold text-sm focus:border-indigo-500 outline-none transition-colors" placeholder="Enter your full name" />
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 block mb-1.5">Password</label>
+                                        <div className="relative">
+                                            <input type={showPassword ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} required
+                                                className="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-3.5 text-white font-semibold text-sm focus:border-indigo-500 outline-none transition-colors pr-12" placeholder="Create a password" />
+                                            <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-3.5 text-slate-500 text-lg">{showPassword ? '🙈' : '👁'}</button>
+                                        </div>
+                                    </div>
+                                    <button type="submit" disabled={loading}
+                                        className={`w-full py-4 rounded-xl font-extrabold text-sm transition-all ${loading ? 'bg-slate-700 text-slate-400' : 'bg-emerald-600 hover:bg-emerald-500 text-white active:scale-[0.98]'}`}>
+                                        {loading ? <span className="animate-pulse">Creating Account...</span> : 'Verify & Create Account ✓'}
+                                    </button>
+                                </>
+                            )}
+                        </>
+                    )}
                 </form>
 
                 {role === 'student' && isLogin && (
@@ -163,18 +230,12 @@ export default function Login({ onLogin }) {
 
                 <p className="text-center text-sm text-slate-400 font-semibold">
                     {isLogin ? "Don't have an account? " : "Already have an account? "}
-                    <button onClick={() => { setIsLogin(!isLogin); setError(''); }} className="text-indigo-400 font-bold hover:text-indigo-300">{isLogin ? 'Sign Up' : 'Sign In'}</button>
+                    <button onClick={() => { setIsLogin(!isLogin); setError(''); setOtpSent(false); setOtp(''); }} className="text-indigo-400 font-bold hover:text-indigo-300">{isLogin ? 'Sign Up' : 'Sign In'}</button>
                 </p>
 
                 {/* Language Footer */}
                 <p className="text-center text-xs text-slate-500 font-semibold">Supports English · ਪੰਜਾਬੀ · हिंदी</p>
 
-                {/* Test Buttons */}
-                <div className="flex justify-center gap-3 pt-2">
-                    <button onClick={() => testLogin('admin')} className="px-4 py-2 border border-emerald-500/30 text-emerald-400 rounded-xl text-xs font-bold hover:bg-emerald-500/10 transition-colors">Test Admin</button>
-                    <button onClick={() => testLogin('teacher')} className="px-4 py-2 border border-violet-500/30 text-violet-400 rounded-xl text-xs font-bold hover:bg-violet-500/10 transition-colors">Test Teacher</button>
-                    <button onClick={() => testLogin('student')} className="px-4 py-2 border border-indigo-500/30 text-indigo-400 rounded-xl text-xs font-bold hover:bg-indigo-500/10 transition-colors">Test Student</button>
-                </div>
 
                 {/* Server Configuration */}
                 <div className="pt-2">

@@ -1,4 +1,5 @@
 const User = require('../models/User');
+const OTP = require('../models/OTP');
 const jwt = require('jsonwebtoken');
 
 const generateToken = (id) => {
@@ -11,7 +12,7 @@ const generateToken = (id) => {
 // @route   POST /api/users
 // @access  Public
 const registerUser = async (req, res) => {
-    const { name, email, password, role, schoolId, language } = req.body;
+    const { name, email, password, role, schoolId, language, otp } = req.body;
     const mongoose = require('mongoose');
 
     if (mongoose.connection.readyState !== 1) {
@@ -31,6 +32,11 @@ const registerUser = async (req, res) => {
         const userExists = await User.findOne({ email });
         if (userExists) {
             return res.status(400).json({ message: 'User already exists' });
+        }
+
+        const otpRecord = await OTP.findOne({ email });
+        if (!otpRecord || otpRecord.otp !== otp) {
+            return res.status(400).json({ message: 'Invalid or expired OTP' });
         }
 
         const user = await User.create({
@@ -53,6 +59,68 @@ const registerUser = async (req, res) => {
         });
     } catch (error) {
         return res.status(400).json({ message: 'Invalid user data', error: error.message });
+    }
+};
+
+// @desc    Send OTP to email
+// @route   POST /api/users/send-otp
+// @access  Public
+const sendOtp = async (req, res) => {
+    const { email } = req.body;
+    const mongoose = require('mongoose');
+    const nodemailer = require('nodemailer');
+
+    if (!email) {
+        return res.status(400).json({ message: 'Email is required' });
+    }
+
+    // Generate 6-digit OTP
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Send real email via Gmail SMTP
+    try {
+        const transporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: {
+                user: process.env.SMTP_EMAIL,
+                pass: process.env.SMTP_PASSWORD,
+            },
+        });
+
+        await transporter.sendMail({
+            from: `"Vidya Setu" <${process.env.SMTP_EMAIL}>`,
+            to: email,
+            subject: 'Your Vidya Setu Verification OTP',
+            html: `
+                <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #0f172a; border-radius: 16px; color: #fff;">
+                    <h2 style="text-align: center; color: #818cf8;">🎓 Vidya Setu</h2>
+                    <p style="text-align: center; color: #94a3b8;">Your verification code is:</p>
+                    <div style="text-align: center; font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #34d399; padding: 20px; background: #1e293b; border-radius: 12px; margin: 16px 0;">
+                        ${otpCode}
+                    </div>
+                    <p style="text-align: center; color: #64748b; font-size: 13px;">This code expires in 5 minutes. Do not share it with anyone.</p>
+                    <hr style="border: none; border-top: 1px solid #1e293b; margin: 20px 0;">
+                    <p style="text-align: center; color: #475569; font-size: 11px;">Vidya Setu · Digital Learning · Nabha Rural Schools</p>
+                </div>
+            `,
+        });
+
+        console.log(`[EMAIL SENT] OTP sent to ${email}`);
+    } catch (emailErr) {
+        console.error('[EMAIL ERROR]', emailErr.message);
+        return res.status(500).json({ message: 'Failed to send OTP email. Check SMTP credentials.', error: emailErr.message });
+    }
+
+    if (mongoose.connection.readyState !== 1) {
+        return res.status(200).json({ message: 'OTP sent but DB offline' });
+    }
+
+    try {
+        await OTP.deleteOne({ email }); // Delete any existing OTP
+        await OTP.create({ email, otp: otpCode });
+        res.status(200).json({ message: 'OTP sent successfully' });
+    } catch (error) {
+        res.status(500).json({ message: 'Error saving OTP', error: error.message });
     }
 };
 
@@ -209,6 +277,7 @@ const getStudents = async (req, res) => {
 
 module.exports = {
     registerUser,
+    sendOtp,
     authUser,
     getUserProgress,
     saveUserProgress,

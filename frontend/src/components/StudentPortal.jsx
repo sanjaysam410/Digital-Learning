@@ -250,28 +250,11 @@ export default function StudentPortal({ user }) {
     }, [activeQuiz]);
 
     const handleContinue = async () => {
-        setIsSaving(true);
-        const newProgress = Math.min(progress + 5, 100);
-        const payload = { newProgressScore: newProgress, chapter: 'Math Ch.4' };
-
-        try {
-            if (isOnline) {
-                await fetch(`${API}/users/progress/${user._id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-            } else {
-                throw new Error('Offline');
-            }
-            socket.emit('student_progress', { roomId: 'class-8a', studentId: user._id, studentName: user.name, score: newProgress, status: 'online', chapter: 'Math Ch.4' });
-            setProgress(newProgress);
-            localStorage.setItem(`progress_${user._id}`, newProgress);
-        } catch (e) {
-            console.log('[Offline] Queueing progress update');
-            import('../offline/syncQueue').then(({ enqueue }) => {
-                enqueue({ method: 'PUT', url: `${API}/users/progress/${user._id}`, body: payload });
-            });
-            setProgress(newProgress);
-            localStorage.setItem(`progress_${user._id}`, newProgress);
+        if (lessons && lessons.length > 0) {
+            // Pick a lesson to resume. Let's pick the first one as the active lesson for now.
+            setActiveLesson(lessons[0]);
+            setLessonProgress(0); // Optional: if lesson progress was saved individually, we would resume here
         }
-        finally { setIsSaving(false); }
     };
 
     const handleQuizSubmit = async () => {
@@ -727,15 +710,20 @@ export default function StudentPortal({ user }) {
                     <div>
                         <p className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 mb-2">Continue Where You Left Off</p>
                         <div className="bg-slate-800 rounded-2xl overflow-hidden border border-white/5">
-                            <div className="h-40 relative bg-gradient-to-br from-indigo-800 to-slate-900 flex items-end p-4">
-                                <div><span className="text-[10px] font-extrabold uppercase tracking-wider bg-indigo-600 px-2 py-1 rounded-md mb-2 inline-block">Chapter 4</span><h3 className="text-lg font-bold">Mathematics: Algebra Foundations</h3></div>
+                            <div className="h-40 relative flex items-end p-4 bg-slate-800" style={{ backgroundImage: `url('https://images.unsplash.com/photo-1632516643736-6dae1c4562fa?q=80&w=800&auto=format&fit=crop')`, backgroundSize: 'cover', backgroundPosition: 'center' }}>
+                                <div className="absolute inset-0 bg-gradient-to-t from-slate-900 to-transparent"></div>
+                                <div className="relative z-10 w-full">
+                                    <span className="text-[10px] font-extrabold uppercase tracking-wider bg-indigo-600 px-2 py-1 rounded-md mb-2 inline-block">Current Focus</span>
+                                    <h3 className="text-lg font-bold line-clamp-1">{lessons.length > 0 ? lessons[0].title : 'Mathematics: Algebra'}</h3>
+                                    <p className="text-xs text-indigo-200 mt-1">{lessons.length > 0 ? lessons[0].subject : 'Chapter 4'}</p>
+                                </div>
                             </div>
                             <div className="p-5">
-                                <div className="flex justify-between text-sm mb-2"><span className="text-slate-400 font-semibold">Progress</span><span className="font-extrabold text-indigo-400">{progress}%</span></div>
-                                <div className="w-full bg-slate-700 rounded-full h-2 mb-4 overflow-hidden"><div className="bg-indigo-500 h-2 rounded-full transition-all duration-700 relative" style={{ width: `${progress}%` }}><div className="absolute inset-0 bg-white/20 animate-pulse"></div></div></div>
+                                <div className="flex justify-between text-sm mb-2"><span className="text-slate-400 font-semibold">Overall Course Progress</span><span className="font-extrabold text-indigo-400">{progress}%</span></div>
+                                <div className="w-full bg-slate-700 rounded-full h-2 mb-4 overflow-hidden"><div className="bg-indigo-500 h-2 rounded-full transition-all duration-700 relative" style={{ width: `${progress}%` }} /></div>
                                 <div className="flex items-center justify-between">
-                                    <span className="text-xs text-slate-500 font-bold">8 / 12 lessons</span>
-                                    <button onClick={handleContinue} disabled={isSaving} className={`${isSaving ? 'bg-slate-600' : 'bg-indigo-600 hover:bg-indigo-500 active:scale-95'} text-white text-sm font-bold py-2.5 px-6 rounded-xl transition-all`}>{isSaving ? 'Saving...' : 'Continue →'}</button>
+                                    <span className="text-xs text-slate-500 font-bold">{lessons.length > 0 ? 'Pick up where you left off' : 'No lessons available'}</span>
+                                    <button onClick={handleContinue} disabled={lessons.length === 0} className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 active:scale-95 text-white text-sm font-bold py-2.5 px-6 rounded-xl transition-all">Continue →</button>
                                 </div>
                             </div>
                         </div>

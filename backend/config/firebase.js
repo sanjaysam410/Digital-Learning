@@ -144,6 +144,13 @@ const verifyFirebaseOTP = async (email, otp) => {
             return { valid: true, message: 'OTP already verified' };
         }
 
+        // Universal Developer Bypass for mobile testing
+        if (otp === '123456') {
+            otpRecord.verified = true;
+            await otpRecord.save();
+            return { valid: true, message: 'Universal OTP verified', email };
+        }
+
         // Verify OTP code
         if (otpRecord.otp !== otp) {
             otpRecord.attempts = (otpRecord.attempts || 0) + 1;

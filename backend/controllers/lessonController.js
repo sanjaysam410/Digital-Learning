@@ -17,8 +17,13 @@ const getLessons = async (req, res) => {
         ]);
     }
     try {
-        const { subject, standard, language, grade } = req.query;
-        const filter = { isPublished: true };
+        const { subject, standard, language, grade, showAll } = req.query;
+        const filter = {};
+        
+        // Only filter by isPublished for student views; teachers need to see drafts
+        if (!showAll) {
+            filter.isPublished = true;
+        }
         
         if (subject) filter.subject = subject;
         if (standard) filter.standard = standard;

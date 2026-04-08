@@ -4,6 +4,7 @@ import App from './App.jsx'
 import './index.css'
 
 import { SyncProvider } from './context/SyncContext.jsx'
+import { ToastProvider } from './components/Toast.jsx'
 import { registerSW } from 'virtual:pwa-register'
 
 const updateSW = registerSW({
@@ -18,7 +19,9 @@ const updateSW = registerSW({
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <SyncProvider>
-      <App />
+      <ToastProvider>
+        <App />
+      </ToastProvider>
     </SyncProvider>
   </React.StrictMode>,
 )

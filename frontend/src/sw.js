@@ -86,8 +86,10 @@ self.addEventListener('sync', (event) => {
 self.addEventListener('periodicsync', (event) => {
     if (event.tag === 'nightly-sync') {
         event.waitUntil(
-            // Implement nightly sync fetching mechanism
-            console.log('[SW] Nightly sync triggered')
+            (async () => {
+                console.log('[SW] Nightly sync triggered');
+                // Future: implement nightly data prefetch here
+            })()
         );
     }
 });

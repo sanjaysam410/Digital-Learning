@@ -30,6 +30,8 @@ const userSchema = new mongoose.Schema({
     progress: [
         {
             lessonId: { type: mongoose.Schema.Types.ObjectId, ref: 'Lesson' },
+            chapter: { type: String, default: '' },
+            subject: { type: String, default: '' },
             status: { type: String, enum: ['not_started', 'in_progress', 'completed'], default: 'not_started' },
             score: { type: Number, default: 0 },
             lastAccessed: { type: Date },

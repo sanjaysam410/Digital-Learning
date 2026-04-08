@@ -166,9 +166,11 @@ export default function Login({ onLogin }) {
                 setError(data.message || 'Something went wrong');
             }
         } catch (err) {
-            // Offline fallback
+            console.warn('[Login] Fetch error:', err.message);
+
+            // Offline fallback — try cached credentials first
             const localUsers = JSON.parse(localStorage.getItem('registeredUsers') || '{}');
-            if (localUsers[email] && localUsers[email].password === password) {
+            if (isLogin && localUsers[email] && localUsers[email].password === password) {
                 const cachedUser = localUsers[email];
                 localStorage.setItem('userInfo', JSON.stringify(cachedUser));
                 onLogin(cachedUser);
@@ -194,7 +196,16 @@ export default function Login({ onLogin }) {
             } else if (cachedUser && cachedUser.email === email) {
                 onLogin(cachedUser);
             } else {
-                setError('Device is offline. Please use cached account or connect to internet.');
+                // Check if the real problem is no server URL configured
+                const savedServerUrl = localStorage.getItem('serverUrl');
+                const isNative = typeof window !== 'undefined' && window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform();
+                if (isNative && !savedServerUrl) {
+                    setError('Server URL not configured. Tap "⚙ Server Settings" below and enter your server address (e.g. http://192.168.x.x:5001).');
+                } else if (err.message === 'Failed to fetch' || err.message?.includes('NetworkError')) {
+                    setError('Cannot reach server. Please check your internet connection and Server Settings below.');
+                } else {
+                    setError(`Connection error: ${err.message}`);
+                }
             }
         } finally { 
             setLoading(false); 

@@ -314,15 +314,19 @@ const authUser = async (req, res) => {
         const user = await User.findOne({ email: email.toLowerCase() }).maxTimeMS(2000);
 
         if (user && (await user.matchPassword(password))) {
-            return res.json({
+            const responseData = {
                 _id: user.id,
                 name: user.name,
                 email: user.email,
                 role: user.role,
                 schoolId: user.schoolId,
                 language: user.language,
+                standard: user.standard || '',
+                subject: user.subject || '',
+                phone: user.phone || '',
                 token: generateToken(user._id),
-            });
+            };
+            return res.json(responseData);
         } else {
             return res.status(401).json({ message: 'Invalid email or password' });
         }
@@ -340,6 +344,7 @@ const handleFallbackLogin = (email, res, error = null) => {
             role: 'student',
             schoolId: 'nabha-01',
             language: 'english',
+            standard: '8',
             token: generateToken('mock-student-1'),
         });
     } else if (email === 'teacher@nabha.edu') {
@@ -350,6 +355,7 @@ const handleFallbackLogin = (email, res, error = null) => {
             role: 'teacher',
             schoolId: 'nabha-01',
             language: 'english',
+            subject: 'Mathematics',
             token: generateToken('mock-teacher-1'),
         });
     } else if (email === 'admin@nabha.edu') {
@@ -394,7 +400,7 @@ const getUserProgress = async (req, res) => {
  * Save/Update user progress
  */
 const saveUserProgress = async (req, res) => {
-    const { newProgressScore, chapter } = req.body;
+    const { newProgressScore, chapter, subject } = req.body;
     const mongoose = require('mongoose');
 
     if (mongoose.connection.readyState !== 1) {
@@ -405,14 +411,18 @@ const saveUserProgress = async (req, res) => {
         const user = await User.findById(req.params.id);
 
         if (user) {
-            if (user.progress.length === 0) {
+            const existingProgressIndex = user.progress.findIndex(p => p.chapter === chapter);
+            if (existingProgressIndex >= 0) {
+                user.progress[existingProgressIndex].score = newProgressScore;
+                user.progress[existingProgressIndex].status = newProgressScore === 100 ? 'completed' : 'in_progress';
+                if (subject) user.progress[existingProgressIndex].subject = subject;
+            } else {
                 user.progress.push({
-                    status: 'in_progress',
+                    chapter: chapter || 'Overview',
+                    subject: subject || 'General',
+                    status: newProgressScore === 100 ? 'completed' : 'in_progress',
                     score: newProgressScore,
                 });
-            } else {
-                user.progress[0].score = newProgressScore;
-                user.progress[0].status = newProgressScore === 100 ? 'completed' : 'in_progress';
             }
 
             await user.save();
@@ -477,6 +487,94 @@ const getUserProfile = async (req, res) => {
     }
 };
 
+/**
+ * Update user profile
+ */
+const updateUserProfile = async (req, res) => {
+    const mongoose = require('mongoose');
+    if (mongoose.connection.readyState !== 1) {
+        return res.status(503).json({ message: 'Database offline. Changes saved locally.' });
+    }
+
+    try {
+        const user = await User.findById(req.params.id);
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        // Allowed fields for update (never allow role/email/password via this endpoint)
+        const allowedFields = ['name', 'phone', 'address', 'language', 'age'];
+
+        // Student-specific editable fields
+        if (user.role === 'student') {
+            allowedFields.push('standard', 'parentName', 'parentOccupation', 'parentMobile');
+        }
+
+        // Teacher-specific editable fields
+        if (user.role === 'teacher') {
+            allowedFields.push('subject', 'qualification', 'experience');
+        }
+
+        // Apply updates
+        for (const field of allowedFields) {
+            if (req.body[field] !== undefined) {
+                user[field] = req.body[field];
+            }
+        }
+
+        // Save without triggering password hash (password not modified)
+        const updatedUser = await user.save();
+
+        // Return updated profile (exclude password)
+        const response = updatedUser.toObject();
+        delete response.password;
+        res.json(response);
+    } catch (error) {
+        res.status(500).json({ message: 'Profile update failed', error: error.message });
+    }
+};
+
+/**
+ * Change user password
+ */
+const changePassword = async (req, res) => {
+    const { currentPassword, newPassword } = req.body;
+    const mongoose = require('mongoose');
+
+    if (mongoose.connection.readyState !== 1) {
+        return res.status(503).json({ message: 'Database offline. Cannot change password now.' });
+    }
+
+    if (!currentPassword || !newPassword) {
+        return res.status(400).json({ message: 'Current and new passwords are required' });
+    }
+
+    if (newPassword.length < 6) {
+        return res.status(400).json({ message: 'New password must be at least 6 characters' });
+    }
+
+    try {
+        const user = await User.findById(req.params.id);
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        // Verify current password
+        const isMatch = await user.matchPassword(currentPassword);
+        if (!isMatch) {
+            return res.status(401).json({ message: 'Current password is incorrect' });
+        }
+
+        // Update password (pre-save hook will hash it)
+        user.password = newPassword;
+        await user.save();
+
+        res.json({ message: 'Password changed successfully' });
+    } catch (error) {
+        res.status(500).json({ message: 'Password change failed', error: error.message });
+    }
+};
+
 module.exports = {
     verifyEmail,
     sendOtp,
@@ -486,5 +584,7 @@ module.exports = {
     getUserProgress,
     saveUserProgress,
     getStudents,
-    getUserProfile
+    getUserProfile,
+    updateUserProfile,
+    changePassword
 };

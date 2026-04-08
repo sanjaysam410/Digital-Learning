@@ -48,6 +48,11 @@ app.use('/api/notifications', require('./routes/notificationRoutes'));
 // Serve uploaded content (raw and compressed subdirs included)
 app.use('/uploads', express.static(path.join(__dirname, 'public/uploads')));
 
+// Lightweight health endpoint for mobile connectivity checks
+app.get('/api/health', (req, res) => {
+    res.json({ status: 'ok', ts: Date.now() });
+});
+
 // Basic health check route
 app.get('/', (req, res) => {
     res.send('Vidya Setu API is Running...');
@@ -78,6 +83,8 @@ io.on('connection', (socket) => {
     socket.on('presence:leave', (data) => {
         socket.leave(data.roomId);
         io.to(data.roomId).emit('presence:user_left', { userId: socket.id });
+        const count = io.sockets.adapter.rooms.get(data.roomId)?.size || 0;
+        io.to(data.roomId).emit('presence:online_count', { roomId: data.roomId, count });
     });
 
     // ── STUDENT PROGRESS (Legacy + New) ──
@@ -184,7 +191,7 @@ io.on('connection', (socket) => {
 
     socket.on('progress:update', (data) => {
         // Relay progress from student to teacher in the room
-        io.to(socket.roomId || 'class-8a').emit('update_teacher_dashboard', data);
+        io.to(socket.roomId).emit('update_teacher_dashboard', data);
     });
 
     // ── SYNC (Offline Data Handshake) ──

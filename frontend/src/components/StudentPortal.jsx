@@ -2,10 +2,17 @@ import React, { useState, useEffect, useRef } from 'react';
 import ReactPlayer from 'react-player';
 import socket from '../socket';
 import SyncStatus from './SyncStatus';
+import { useSync } from '../context/SyncContext';
+import { useToast } from './Toast';
 import { API_BASE, SOCKET_URL } from '../config';
 import { saveVideoOffline, getOfflineVideoUrl, getSavedLessonIds, deleteOfflineVideo, getOfflineStorageUsed } from '../offline/videoCache';
 
 const API = API_BASE;
+
+// Legacy Cloudinary cloud names that may exist in old database records
+const LEGACY_CLOUD_NAMES = ['dpnkgdq6z'];
+const CURRENT_CLOUD_NAME = 'vidyasetu';
+
 // Resolve upload paths to the correct server host (handles both relative and old absolute localhost URLs)
 const resolveUrl = (url) => {
     if (!url) return url;
@@ -14,10 +21,12 @@ const resolveUrl = (url) => {
     if (url.startsWith('http://localhost:5001/uploads/') || url.startsWith('http://127.0.0.1:5001/uploads/')) {
         return `${SOCKET_URL}/uploads/${url.split('/uploads/')[1]}`;
     }
-    // Fix Cloudinary URLs - replace old cloud name with correct one
+    // Fix Cloudinary URLs - migrate legacy cloud names to current
     if (url.includes('cloudinary.com')) {
-        // Replace old cloud name with correct one
-        let fixedUrl = url.replace('dpnkgdq6z', 'vidyasetu');
+        let fixedUrl = url;
+        for (const legacy of LEGACY_CLOUD_NAMES) {
+            fixedUrl = fixedUrl.replace(legacy, CURRENT_CLOUD_NAME);
+        }
         // Add optimization parameters
         const separator = fixedUrl.includes('?') ? '&' : '?';
         return `${fixedUrl}${separator}f_auto&q=auto`;
@@ -28,6 +37,7 @@ const resolveUrl = (url) => {
 const isDirectVideo = (url) => url && (url.endsWith('.mp4') || url.endsWith('.webm') || url.endsWith('.ogg') || url.includes('cloudinary.com/') || url.includes('/uploads/'));
 
 export default function StudentPortal({ user }) {
+    const toast = useToast();
     const [activeTab, setActiveTab] = useState('home');
     const [lessons, setLessons] = useState([]);
     const [quizzes, setQuizzes] = useState([]);
@@ -36,7 +46,7 @@ export default function StudentPortal({ user }) {
         return saved ? parseInt(saved) : 0;
     });
     const [isSaving, setIsSaving] = useState(false);
-    const [isOnline, setIsOnline] = useState(navigator.onLine);
+    const { isOnline } = useSync();
     const [onlineCount, setOnlineCount] = useState(0);
     const [offlineUsageBytes, setOfflineUsageBytes] = useState(null);
 
@@ -85,6 +95,18 @@ export default function StudentPortal({ user }) {
         const saved = localStorage.getItem(`completedQuizzes_${user?._id}`);
         return saved ? JSON.parse(saved) : [];
     });
+    const [completedLessonIds, setCompletedLessonIds] = useState(() => {
+        const saved = localStorage.getItem(`completedLessons_${user?._id}`);
+        return saved ? JSON.parse(saved) : [];
+    });
+    const [lessonProgressMap, setLessonProgressMap] = useState(() => {
+        const saved = localStorage.getItem(`lessonProgressMap_${user?._id}`);
+        return saved ? JSON.parse(saved) : {};
+    });
+    const [lastActiveLessonId, setLastActiveLessonId] = useState(() => {
+        return localStorage.getItem(`lastActiveLessonId_${user?._id}`) || null;
+    });
+    const badgesCount = Math.min(5, Math.floor(completedLessonIds.length / 2) + completedQuizIds.length);
     const [showSubmitModal, setShowSubmitModal] = useState(false);
 
     // Helper: normalize YouTube URLs for Android WebView compatibility
@@ -135,42 +157,15 @@ export default function StudentPortal({ user }) {
             }
         });
 
-        // Real-time notifications — also refresh data when new content is added
-        socket.on('notification:new', (notif) => {
-            setNotifications(prev => [{ ...notif, read: false }, ...prev]);
-            if (notif.type === 'quiz') {
-                fetch(`${API}/quizzes`).then(r => r.json()).then(data => {
-                    if (Array.isArray(data)) setQuizzes(data);
-                }).catch(() => { });
-            }
-            if (notif.type === 'lesson') {
-                // Refetch lessons for this student's class
-                fetchLessons();
-            }
-        });
-
-        // Online/Offline detection
-        const goOnline = () => setIsOnline(true);
-        const goOffline = () => setIsOnline(false);
-        window.addEventListener('online', goOnline);
-        window.addEventListener('offline', goOffline);
-
-        // Fetch notifications filtered by student's class
-        fetch(`${API}/notifications?role=student&userId=${user?._id || ''}&standard=${user?.standard || '8'}`).then(r => r.json()).then(data => {
-            if (Array.isArray(data)) setNotifications(data);
-        }).catch(() => { });
-
         // Fetch lessons filtered by student's class
         const fetchLessons = () => {
             const standard = user?.standard || '8';
             fetch(`${API}/lessons?standard=${standard}`).then(r => r.json()).then(data => {
                 if (!Array.isArray(data)) { console.warn('Lessons API returned non-array:', data); return; }
-                // Normalize YouTube URLs in lessons
                 const normalized = data.map(l => ({ ...l, contentUrl: normalizeYouTubeUrl(l.contentUrl) }));
                 setLessons(normalized);
             }).catch((err) => { console.warn('Lessons fetch error:', err); });
         };
-        fetchLessons();
 
         // Fetch quizzes filtered by student's class
         const fetchQuizzes = () => {
@@ -180,6 +175,29 @@ export default function StudentPortal({ user }) {
                 setQuizzes(data);
             }).catch((err) => { console.warn('Quizzes fetch error:', err); });
         };
+
+        // Real-time notifications — also refresh data when new content is added
+        socket.on('notification:new', (notif) => {
+            setNotifications(prev => [{ ...notif, read: false }, ...prev]);
+            if (notif.type === 'quiz') {
+                // Refetch quizzes for this student's class
+                fetchQuizzes();
+            }
+            if (notif.type === 'lesson') {
+                // Refetch lessons for this student's class
+                fetchLessons();
+            }
+        });
+
+        // Online/Offline detection is now handled centrally by SyncContext
+        // No need for local window event listeners here
+
+        // Fetch notifications filtered by student's class
+        fetch(`${API}/notifications?role=student&userId=${user?._id || ''}&standard=${user?.standard || '8'}`).then(r => r.json()).then(data => {
+            if (Array.isArray(data)) setNotifications(data);
+        }).catch(() => { });
+
+        fetchLessons();
         fetchQuizzes();
 
         // Fetch chat messages for student's class
@@ -193,8 +211,6 @@ export default function StudentPortal({ user }) {
             socket.off('chat:typing_indicator');
             socket.off('quiz:started');
             socket.off('notification:new');
-            window.removeEventListener('online', goOnline);
-            window.removeEventListener('offline', goOffline);
         };
     }, []);
 
@@ -262,7 +278,7 @@ export default function StudentPortal({ user }) {
                 await fetch(`${API}/users/progress/${user._id}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ progress: newProgress })
+                    body: JSON.stringify({ newProgressScore: newProgress, chapter: activeLesson?.title || 'Overall', subject: activeLesson?.subject || 'General' })
                 });
             }
         } catch (error) {
@@ -281,6 +297,13 @@ export default function StudentPortal({ user }) {
     // When opening a lesson, check for offline video first
     useEffect(() => {
         if (activeLesson) {
+            setLessonProgress(lessonProgressMap[activeLesson._id] || 0);
+            
+            if (lastActiveLessonId !== activeLesson._id) {
+                setLastActiveLessonId(activeLesson._id);
+                localStorage.setItem(`lastActiveLessonId_${user?._id}`, activeLesson._id);
+            }
+
             setOfflineVideoUrl(null);
             getOfflineVideoUrl(activeLesson._id).then(url => {
                 if (url) setOfflineVideoUrl(url);
@@ -336,10 +359,10 @@ export default function StudentPortal({ user }) {
 
             setSavedLessonIds(prev => [...prev, lesson._id]);
             getOfflineStorageUsed().then(setOfflineUsageBytes).catch(() => { });
-            alert('Video downloaded successfully! Available offline now.');
+            toast.success('Video downloaded! Available offline now.');
         } catch (e) {
             console.error('Download failed:', e);
-            alert(`Download failed: ${e.message}. Make sure you're online and try again.`);
+            toast.error(`Download failed: ${e.message}. Make sure you're online.`);
         } finally {
             setDownloadingId(null);
             setDownloadProgress(0);
@@ -403,7 +426,7 @@ export default function StudentPortal({ user }) {
             fetch(`${API}/users/progress/${user._id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ newProgressScore: finalScore, chapter: activeQuiz.title })
+                body: JSON.stringify({ newProgressScore: finalScore, chapter: activeQuiz.title, subject: activeQuiz.subject || 'General' })
             }).catch(() => { });
 
             // Sync real-time performance to Teacher Dashboard
@@ -564,7 +587,37 @@ export default function StudentPortal({ user }) {
                                     src={videoUrl}
                                     controls
                                     style={{ width: '100%', maxHeight: '320px', display: 'block', margin: '0 auto' }}
-                                    onTimeUpdate={(e) => setLessonProgress((e.target.currentTime / e.target.duration) * 100 || 0)}
+                                    onLoadedMetadata={(e) => {
+                                        const prevProgress = lessonProgressMap[activeLesson._id];
+                                        if (prevProgress > 0 && prevProgress < 95 && e.target.duration) {
+                                            e.target.currentTime = (prevProgress / 100) * e.target.duration;
+                                        }
+                                    }}
+                                    onTimeUpdate={(e) => {
+                                        const curProgress = (e.target.currentTime / e.target.duration) * 100 || 0;
+                                        setLessonProgress(curProgress);
+                                        setLessonProgressMap(prev => {
+                                            const updated = { ...prev, [activeLesson._id]: curProgress };
+                                            localStorage.setItem(`lessonProgressMap_${user?._id}`, JSON.stringify(updated));
+                                            return updated;
+                                        });
+                                        if (curProgress > 80 && activeLesson && !completedLessonIds.includes(activeLesson._id)) {
+                                            setCompletedLessonIds(prev => {
+                                                const updated = [...prev, activeLesson._id];
+                                                localStorage.setItem(`completedLessons_${user?._id}`, JSON.stringify(updated));
+                                                return updated;
+                                            });
+                                            
+                                            // Send real-time update to Teacher Dashboard
+                                            socket.emit('progress:update', {
+                                                roomId: `class-${user?.standard || '8'}`,
+                                                studentId: user?._id,
+                                                studentName: user?.name,
+                                                score: 100,
+                                                chapter: activeLesson?.title || 'Overall'
+                                            });
+                                        }
+                                    }}
                                     onError={(e) => {
                                         console.error('Video error:', e.target.error);
                                         console.error('Video URL:', videoUrl);
@@ -587,7 +640,7 @@ export default function StudentPortal({ user }) {
                                         <button
                                             onClick={() => {
                                                 navigator.clipboard.writeText(videoUrl);
-                                                alert('Video URL copied! Paste it in a new tab.');
+                                                toast.info('Video URL copied! Paste it in a new tab.');
                                             }}
                                             className="text-[10px] font-bold text-violet-400 bg-violet-500/10 px-3 py-1.5 rounded-lg hover:bg-violet-500/20"
                                         >
@@ -606,10 +659,15 @@ export default function StudentPortal({ user }) {
                     {/* Progress Bar */}
                     <div className="px-5 pt-4">
                         <div className="flex justify-between text-[10px] font-bold text-slate-500 mb-1.5">
-                            <span>LESSON PROGRESS</span><span className={lessonProgress > 80 ? 'text-emerald-400' : 'text-indigo-400'}>{Math.round(lessonProgress)}%</span>
+                            <span>LESSON PROGRESS</span>
+                            {completedLessonIds.includes(activeLesson._id) ? (
+                                <span className="text-emerald-400">COMPLETED</span>
+                            ) : (
+                                <span className={lessonProgress > 80 ? 'text-emerald-400' : 'text-indigo-400'}>{Math.round(lessonProgress)}%</span>
+                            )}
                         </div>
                         <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
-                            <div className={`h-2 rounded-full transition-all duration-500 ${lessonProgress > 80 ? 'bg-emerald-500' : 'bg-indigo-500'}`} style={{ width: `${lessonProgress}%` }} />
+                            <div className={`h-2 rounded-full transition-all duration-500 ${completedLessonIds.includes(activeLesson._id) || lessonProgress > 80 ? 'bg-emerald-500' : 'bg-indigo-500'}`} style={{ width: completedLessonIds.includes(activeLesson._id) ? '100%' : `${lessonProgress}%` }} />
                         </div>
                     </div>
 
@@ -677,6 +735,30 @@ export default function StudentPortal({ user }) {
                             <div className="pt-4 border-t border-white/10">
                                 <button onClick={() => { setActiveLesson(null); setLessonProgress(0); setActiveQuiz(linkedQuiz); setCurrentQ(0); setAnswers({}); setQuizResult(null); }} className="w-full py-4 bg-indigo-600 rounded-2xl font-bold text-sm hover:bg-indigo-500 shadow-lg shadow-indigo-600/20 flex justify-center items-center gap-2 active:scale-95 transition-all">
                                     <span>Take Quiz for this Lesson →</span>
+                                </button>
+                            </div>
+                        )}
+                        {!completedLessonIds.includes(activeLesson._id) && (
+                            <div className="pt-4 border-t border-white/10">
+                                <button onClick={() => {
+                                    setCompletedLessonIds(prev => {
+                                        const updated = [...prev, activeLesson._id];
+                                        localStorage.setItem(`completedLessons_${user?._id}`, JSON.stringify(updated));
+                                        return updated;
+                                    });
+                                    setLessonProgress(100);
+                                    saveProgress(progress + 5 > 100 ? 100 : progress + 5);
+                                    
+                                    // Send real-time update to Teacher Dashboard
+                                    socket.emit('progress:update', {
+                                        roomId: `class-${user?.standard || '8'}`,
+                                        studentId: user?._id,
+                                        studentName: user?.name,
+                                        score: 100,
+                                        chapter: activeLesson?.title || 'Overall'
+                                    });
+                                }} className="w-full py-4 bg-emerald-600 rounded-2xl font-bold text-sm hover:bg-emerald-500 shadow-lg shadow-emerald-600/20 flex justify-center items-center gap-2 active:scale-95 transition-all">
+                                    <span>✓ Mark Lesson as Completed</span>
                                 </button>
                             </div>
                         )}
@@ -868,9 +950,9 @@ export default function StudentPortal({ user }) {
                             <h2 className="text-2xl font-extrabold mb-0.5">{user?.name || 'Student'}</h2>
                             <p className="text-sm text-indigo-200 font-medium mb-4">School ID: {user?.schoolId || 'nabha-01'}</p>
                             <div className="flex divide-x divide-white/20 text-center">
-                                <div className="flex-1"><p className="text-2xl font-black">8</p><p className="text-[10px] text-indigo-200 uppercase font-bold">Lessons</p></div>
-                                <div className="flex-1"><p className="text-2xl font-black">3</p><p className="text-[10px] text-indigo-200 uppercase font-bold">Quizzes</p></div>
-                                <div className="flex-1"><p className="text-2xl font-black">5</p><p className="text-[10px] text-indigo-200 uppercase font-bold">Badges</p></div>
+                                <div className="flex-1"><p className="text-2xl font-black">{completedLessonIds.length}</p><p className="text-[10px] text-indigo-200 uppercase font-bold">Lessons</p></div>
+                                <div className="flex-1"><p className="text-2xl font-black">{completedQuizIds.length}</p><p className="text-[10px] text-indigo-200 uppercase font-bold">Quizzes</p></div>
+                                <div className="flex-1"><p className="text-2xl font-black">{badgesCount}</p><p className="text-[10px] text-indigo-200 uppercase font-bold">Badges</p></div>
                             </div>
                         </div>
                     </div>
@@ -878,47 +960,78 @@ export default function StudentPortal({ user }) {
                     {/* Badges */}
                     <div>
                         <p className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 mb-2">Your Badges</p>
-                        <div className="bg-slate-800/60 rounded-xl p-3 border border-white/5 flex gap-3">
-                            {['⭐', '🏅', '🔥', '💡', '🌟'].map((b, i) => <span key={i} className="text-2xl cursor-default hover:scale-125 transition-transform" title={['First Star', 'Scholar', 'On Fire', 'Quick Learner', 'Perfect'][i]}>{b}</span>)}
+                        <div className="bg-slate-800/60 rounded-xl p-3 border border-white/5 flex gap-3 items-center">
+                            {['⭐', '🏅', '🔥', '💡', '🌟'].slice(0, badgesCount).map((b, i) => <span key={i} className="text-2xl cursor-default hover:scale-125 transition-transform" title={['First Star', 'Scholar', 'On Fire', 'Quick Learner', 'Perfect'][i]}>{b}</span>)}
+                            {badgesCount === 0 && <span className="text-xs text-slate-500 font-bold ml-2">No badges yet. Start learning!</span>}
                         </div>
                     </div>
 
                     {/* Continue Learning */}
-                    <div>
-                        <p className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 mb-2">Continue Where You Left Off</p>
-                        <div className="bg-slate-800 rounded-2xl overflow-hidden border border-white/5">
-                            <div className="h-40 relative flex items-end p-4 bg-gradient-to-br from-indigo-600 via-violet-600 to-purple-700">
-                                <div className="absolute inset-0 bg-gradient-to-t from-slate-900 to-transparent"></div>
-                                <div className="relative z-10 w-full">
-                                    <span className="text-[10px] font-extrabold uppercase tracking-wider bg-indigo-600 px-2 py-1 rounded-md mb-2 inline-block">Current Focus</span>
-                                    <h3 className="text-lg font-bold line-clamp-1">{lessons.length > 0 ? lessons[0].title : 'Mathematics: Algebra'}</h3>
-                                    <p className="text-xs text-indigo-200 mt-1">{lessons.length > 0 ? lessons[0].subject : 'Chapter 4'}</p>
-                                </div>
-                            </div>
-                            <div className="p-5">
-                                <div className="flex justify-between text-sm mb-2"><span className="text-slate-400 font-semibold">Overall Course Progress</span><span className="font-extrabold text-indigo-400">{progress}%</span></div>
-                                <div className="w-full bg-slate-700 rounded-full h-2 mb-4 overflow-hidden"><div className="bg-indigo-500 h-2 rounded-full transition-all duration-700 relative" style={{ width: `${progress}%` }} /></div>
-                                <div className="flex items-center justify-between">
-                                    <span className="text-xs text-slate-500 font-bold">{lessons.length > 0 ? 'Pick up where you left off' : 'No lessons available'}</span>
-                                    <button onClick={handleContinue} disabled={lessons.length === 0} className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 active:scale-95 text-white text-sm font-bold py-2.5 px-6 rounded-xl transition-all">Continue →</button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Pending Quiz */}
-                    {quizzes.length > 0 && (
+                    {(() => {
+                        const focusLesson = lessons.find(l => l._id === lastActiveLessonId) || lessons.find(l => !completedLessonIds.includes(l._id)) || lessons[0];
+                        const focusLessonProgress = focusLesson ? (lessonProgressMap[focusLesson._id] || 0) : 0;
+                        return (
                         <div>
-                            <p className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 mb-2">Pending Quiz</p>
-                            <div onClick={() => { setActiveQuiz(quizzes[0]); setCurrentQ(0); setAnswers({}); setQuizResult(null); }} className="bg-slate-800 rounded-2xl p-4 border border-amber-500/20 flex items-center justify-between cursor-pointer hover:border-amber-500/40 transition-all active:scale-[0.98]">
-                                <div className="flex items-center space-x-3">
-                                    <div className="w-12 h-12 rounded-xl bg-amber-500/10 flex items-center justify-center text-amber-400 text-xl">📝</div>
-                                    <div><h3 className="font-bold text-sm">{quizzes[0].title}</h3><p className="text-[11px] text-slate-500 font-semibold">{quizzes[0].questions?.length || 5} questions · {Math.floor((quizzes[0].timeLimit || 900) / 60)} mins</p></div>
+                            <p className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 mb-2">Continue Where You Left Off</p>
+                            <div className="bg-slate-800 rounded-2xl overflow-hidden border border-white/5">
+                                <div className="h-40 relative flex items-end p-4 bg-gradient-to-br from-indigo-600 via-violet-600 to-purple-700">
+                                    <div className="absolute inset-0 bg-gradient-to-t from-slate-900 to-transparent"></div>
+                                    <div className="relative z-10 w-full">
+                                        <span className="text-[10px] font-extrabold uppercase tracking-wider bg-indigo-600 px-2 py-1 rounded-md mb-2 inline-block">Current Focus</span>
+                                        <h3 className="text-lg font-bold line-clamp-1">{focusLesson ? focusLesson.title : 'Mathematics: Algebra'}</h3>
+                                        <p className="text-xs text-indigo-200 mt-1">{focusLesson ? focusLesson.subject : 'Chapter 4'}</p>
+                                    </div>
                                 </div>
-                                <button className="bg-amber-600 text-white text-xs font-bold py-2.5 px-5 rounded-xl">Start →</button>
+                                <div className="p-5">
+                                    <div className="flex justify-between text-sm mb-2">
+                                        <span className="text-slate-400 font-semibold">{focusLesson ? focusLesson.title : 'Overall'} Progress</span>
+                                        {focusLesson && completedLessonIds.includes(focusLesson._id) ? (
+                                            <span className="font-extrabold text-emerald-400">COMPLETED</span>
+                                        ) : (
+                                            <span className="font-extrabold text-indigo-400">{Math.round(focusLessonProgress)}%</span>
+                                        )}
+                                    </div>
+                                    <div className="w-full bg-slate-700 rounded-full h-2 mb-4 overflow-hidden">
+                                        <div className={`h-2 rounded-full transition-all duration-700 relative ${focusLesson && completedLessonIds.includes(focusLesson._id) ? 'bg-emerald-500' : 'bg-indigo-500'}`} style={{ width: focusLesson && completedLessonIds.includes(focusLesson._id) ? '100%' : `${focusLessonProgress}%` }} />
+                                    </div>
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-xs text-slate-500 font-bold">{focusLesson ? 'Pick up where you left off' : 'No lessons available'}</span>
+                                        <button onClick={() => { if(focusLesson) { setActiveLesson(focusLesson); setLessonProgress(lessonProgressMap[focusLesson._id] || 0); } }} disabled={!focusLesson} className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 active:scale-95 text-white text-sm font-bold py-2.5 px-6 rounded-xl transition-all">Continue →</button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
-                    )}
+                        );
+                    })()}
+
+                    {/* Pending / Featured Quiz */}
+                    {quizzes.length > 0 && (() => {
+                        const pendingQuiz = quizzes.find(q => !completedQuizIds.includes(q._id));
+                        const displayQuiz = pendingQuiz || quizzes[0];
+                        const isCompleted = completedQuizIds.includes(displayQuiz._id);
+                        
+                        return (
+                            <div>
+                                <p className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 mb-2">{isCompleted ? 'Latest Quiz' : 'Pending Quiz'}</p>
+                                <div onClick={() => { if(!isCompleted) { setActiveQuiz(displayQuiz); setCurrentQ(0); setAnswers({}); setQuizResult(null); } }} className={`bg-slate-800 rounded-2xl p-4 border flex items-center justify-between transition-all ${isCompleted ? 'border-emerald-500/20' : 'border-amber-500/20 cursor-pointer hover:border-amber-500/40 active:scale-[0.98]'}`}>
+                                    <div className="flex items-center space-x-3">
+                                        <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-xl ${isCompleted ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>📝</div>
+                                        <div>
+                                            <h3 className="font-bold text-sm block min-w-0 pr-2">{displayQuiz.title}</h3>
+                                            <p className="text-[11px] text-slate-500 font-semibold">{displayQuiz.questions?.length || 5} questions · {Math.floor((displayQuiz.timeLimit || 900) / 60)} mins</p>
+                                        </div>
+                                    </div>
+                                    {isCompleted ? (
+                                        <div className="bg-emerald-500/10 text-emerald-400 text-[10px] font-extrabold py-2 px-3 rounded-xl flex items-center gap-1 shrink-0">
+                                            <span>✓</span> <span>DONE</span>
+                                        </div>
+                                    ) : (
+                                        <button className="bg-amber-600 text-white text-xs font-bold py-2.5 px-5 rounded-xl shrink-0">Start →</button>
+                                    )}
+                                </div>
+                            </div>
+                        );
+                    })()}
 
                     {/* Today's Lessons */}
                     <div>

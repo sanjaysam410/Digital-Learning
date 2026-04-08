@@ -9,7 +9,9 @@ const {
     getUserProgress,
     saveUserProgress,
     getStudents,
-    getUserProfile
+    getUserProfile,
+    updateUserProfile,
+    changePassword
 } = require('../controllers/userController');
 
 // Email verification & OTP routes
@@ -24,6 +26,8 @@ router.post('/login', authUser);               // Login user
 // User management routes
 router.get('/students', getStudents);          // Get all students (Teacher/Admin)
 router.get('/profile/:id', getUserProfile);    // Get user profile
+router.put('/profile/:id', updateUserProfile); // Update user profile
+router.put('/change-password/:id', changePassword); // Change user password
 router.get('/progress/:id', getUserProgress);  // Get user progress
 router.put('/progress/:id', saveUserProgress); // Update user progress
 

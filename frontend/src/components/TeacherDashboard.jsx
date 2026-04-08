@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BarChart, Bar, ResponsiveContainer, XAxis, YAxis, Tooltip, PieChart, Pie, Cell } from 'recharts';
 import socket from '../socket';
+import SyncStatus from './SyncStatus';
+import { useSync } from '../context/SyncContext';
+import { useToast } from './Toast';
 import { API_BASE, SOCKET_URL } from '../config';
 
 const API = API_BASE;
@@ -8,6 +11,7 @@ const API = API_BASE;
 const resolveUrl = (url) => (url && url.startsWith('/uploads/')) ? `${SOCKET_URL}${url}` : url;
 
 export default function TeacherDashboard({ user }) {
+    const toast = useToast();
     const [activeTab, setActiveTab] = useState('overview');
     const [students, setStudents] = useState([]);
     const [lessons, setLessons] = useState([]);
@@ -15,7 +19,7 @@ export default function TeacherDashboard({ user }) {
     const [onlineCount, setOnlineCount] = useState(0);
     const [isClassLive, setIsClassLive] = useState(false);
     const [activityFeed, setActivityFeed] = useState([]);
-    const [isOnline, setIsOnline] = useState(navigator.onLine);
+    const { isOnline } = useSync();
 
     // Upload State
     const [uploadProgress, setUploadProgress] = useState(0);
@@ -28,7 +32,7 @@ export default function TeacherDashboard({ user }) {
     const [editingLesson, setEditingLesson] = useState(null);
     const [lessonForm, setLessonForm] = useState({ 
         title: '', 
-        subject: 'Mathematics', 
+        subject: user?.subject || 'General', 
         standard: '8', 
         language: 'English', 
         description: '', 
@@ -47,7 +51,7 @@ export default function TeacherDashboard({ user }) {
 
     // Quiz Builder State
     const [showQuizBuilder, setShowQuizBuilder] = useState(false);
-    const [quizForm, setQuizForm] = useState({ title: '', subject: 'Mathematics', standard: '8', language: 'English', timeLimit: 900, passingScore: 60, badgeAwarded: '⭐', questions: [] });
+    const [quizForm, setQuizForm] = useState({ title: '', subject: user?.subject || 'General', standard: '8', language: 'English', timeLimit: 900, passingScore: 60, badgeAwarded: '⭐', questions: [] });
     const [editingQuestion, setEditingQuestion] = useState(null);
     const [qForm, setQForm] = useState({ questionText: '', type: 'mcq', options: ['', '', '', ''], correctAnswer: '', points: 1, explanation: '' });
     const [previewMode, setPreviewMode] = useState(false);
@@ -78,12 +82,24 @@ export default function TeacherDashboard({ user }) {
     ]);
     const savedLessonIdRef = useRef(null); // tracks last saved lesson ID for post-compression DB update
 
+    // Dynamic classroom joining based on teacher selection
     useEffect(() => {
-        socket.emit('join_class', 'class-8a');
+        const roomId = `class-${selectedClass.standard}`;
+        socket.emit('join_class', roomId);
+        
+        // Fetch chat messages for selected class
+        fetch(`${API}/chat/${roomId}`).then(r => r.json()).then(setChatMessages).catch(() => { });
+        
+        return () => {
+            socket.emit('presence:leave', { roomId });
+        };
+    }, [selectedClass.standard]);
+
+    useEffect(() => {
         socket.on('update_teacher_dashboard', (data) => {
             setStudents(prev => {
                 const idx = prev.findIndex(s => s.studentId === data.studentId);
-                if (idx >= 0) { const copy = [...prev]; copy[idx] = { ...copy[idx], score: data.score, status: 'online' }; return copy; }
+                if (idx >= 0) { const copy = [...prev]; copy[idx] = { ...copy[idx], score: data.score, status: 'online', chapter: data.chapter }; return copy; }
                 return [...prev, { studentId: data.studentId, studentName: data.studentName, score: data.score, status: 'online', chapter: data.chapter }];
             });
             setActivityFeed(prev => [{ text: `${data.studentName} progressed to ${data.score}% in ${data.chapter}`, time: Date.now() }, ...prev].slice(0, 20));
@@ -101,12 +117,12 @@ export default function TeacherDashboard({ user }) {
             setNotifications(prev => [{ ...notif, read: false }, ...prev]);
             if (notif.type === 'quiz') {
                 fetch(`${API}/quizzes`).then(r => r.json()).then(data => {
-                    if (Array.isArray(data)) setQuizzes(data);
+                    if (Array.isArray(data)) setQuizzes(data.filter(q => q.createdBy === user?._id || user?.role === 'admin'));
                 }).catch(() => {});
             }
             if (notif.type === 'lesson') {
-                fetch(`${API}/lessons`).then(r => r.json()).then(data => {
-                    if (Array.isArray(data)) setLessons(data);
+                fetch(`${API}/lessons?showAll=true`).then(r => r.json()).then(data => {
+                    if (Array.isArray(data)) setLessons(data.filter(l => l.createdBy === user?._id || user?.role === 'admin'));
                 }).catch(() => {});
             }
         });
@@ -129,17 +145,14 @@ export default function TeacherDashboard({ user }) {
             setCompressionStatus('error');
         });
 
-        const goOnline = () => setIsOnline(true);
-        const goOffline = () => setIsOnline(false);
-        window.addEventListener('online', goOnline);
-        window.addEventListener('offline', goOffline);
+        // Online/Offline detection is now handled centrally by SyncContext
 
-        fetch(`${API}/lessons`).then(r => r.json()).then(setLessons).catch(() => { });
-        fetch(`${API}/quizzes`).then(r => r.json()).then(setQuizzes).catch(() => { });
-        
-        // Fetch chat messages for selected class
-        const roomId = `class-${selectedClass.standard}`;
-        fetch(`${API}/chat/${roomId}`).then(r => r.json()).then(setChatMessages).catch(() => { });
+        fetch(`${API}/lessons?showAll=true`).then(r => r.json()).then(data => {
+            if (Array.isArray(data)) setLessons(data.filter(l => l.createdBy === user?._id || user?.role === 'admin'));
+        }).catch(() => { });
+        fetch(`${API}/quizzes`).then(r => r.json()).then(data => {
+            if (Array.isArray(data)) setQuizzes(data.filter(q => q.createdBy === user?._id || user?.role === 'admin'));
+        }).catch(() => { });
         fetch(`${API}/notifications?role=teacher&userId=${user?._id || ''}`).then(r => r.json()).then(data => {
             if (Array.isArray(data)) setNotifications(data);
         }).catch(() => {});
@@ -147,14 +160,28 @@ export default function TeacherDashboard({ user }) {
         // Fetch real students from the database
         fetch(`${API}/users/students`).then(r => r.json()).then(data => {
             if (Array.isArray(data)) {
+                const teacherSubject = user?.subject || 'Mathematics';
                 const mappedStudents = data.map(u => {
-                    const latestScore = u.progress && u.progress.length > 0 ? u.progress[0].score : 0;
+                    const subjectProgress = (u.progress || []).filter(p => p.subject === teacherSubject);
+                    let latestScore = 0;
+                    let chapter = '-';
+                    
+                    if (subjectProgress.length > 0) {
+                        const lastActivity = subjectProgress[subjectProgress.length - 1];
+                        latestScore = lastActivity.score;
+                        chapter = lastActivity.chapter;
+                    } else if (u.progress && u.progress.length > 0) {
+                        const fallBack = u.progress[u.progress.length - 1];
+                        latestScore = fallBack.score || 0;
+                        chapter = fallBack.chapter || '-';
+                    }
+
                     return {
                         studentId: u._id,
                         studentName: u.name,
                         score: latestScore,
                         status: 'offline', // default, socket will update if online
-                        chapter: '-'
+                        chapter: chapter
                     };
                 });
                 setStudents(mappedStudents);
@@ -170,15 +197,13 @@ export default function TeacherDashboard({ user }) {
             socket.off('video:compressed');
             socket.off('video:compression_error');
             socket.off('notification:new');
-            window.removeEventListener('online', goOnline);
-            window.removeEventListener('offline', goOffline);
         };
     }, []);
 
     useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages]);
 
-    const handleStartClass = () => { setIsClassLive(true); socket.emit('class:start', { roomId: 'class-8a', teacherName: user?.name, subject: 'Mathematics' }); };
-    const handleEndClass = () => { if (confirm('End the live class session?')) { setIsClassLive(false); socket.emit('class:end', { roomId: 'class-8a' }); } };
+    const handleStartClass = () => { setIsClassLive(true); socket.emit('class:start', { roomId: `class-${selectedClass.standard}`, teacherName: user?.name, subject: user?.subject || 'General' }); };
+    const handleEndClass = () => { if (confirm('End the live class session?')) { setIsClassLive(false); socket.emit('class:end', { roomId: `class-${selectedClass.standard}` }); } };
 
     const handleFileUpload = async (file, type) => {
         setIsUploading(true); setUploadType(type); setUploadProgress(0);
@@ -205,13 +230,13 @@ export default function TeacherDashboard({ user }) {
                 xhr.setRequestHeader('x-socket-id', socket.id || '');
                 xhr.send(formData);
             });
-        } catch (e) { alert('Upload failed'); }
+        } catch (e) { toast.error('Upload failed. Please try again.'); }
         setIsUploading(false); setUploadProgress(0); setUploadType('');
     };
 
     const handleCreateLesson = async (publishOverride) => {
-        if (!lessonForm.title || lessonForm.title.length < 3) { alert('Title must be at least 3 characters'); return; }
-        if (!lessonForm.standard) { alert('Please select a class'); return; }
+        if (!lessonForm.title || lessonForm.title.length < 3) { toast.warning('Title must be at least 3 characters'); return; }
+        if (!lessonForm.standard) { toast.warning('Please select a class'); return; }
         try {
             const tags = lessonForm.tags ? lessonForm.tags.split(',').map(t => t.trim()).filter(Boolean) : [];
             const method = editingLesson ? 'PUT' : 'POST';
@@ -223,13 +248,13 @@ export default function TeacherDashboard({ user }) {
             savedLessonIdRef.current = saved._id;
             if (editingLesson) { setLessons(prev => prev.map(l => l._id === saved._id ? saved : l)); } else { setLessons(prev => [saved, ...prev]); }
             setShowLessonBuilder(false); setEditingLesson(null);
-            setLessonForm({ title: '', subject: 'Mathematics', standard: '8', language: 'English', description: '', contentUrl: '', pdfUrl: '', duration: 30, isPublished: false, isDownloadable: true, tags: '' });
-        } catch (e) { alert('Failed to save'); }
+            setLessonForm({ title: '', subject: user?.subject || 'General', standard: '8', language: 'English', description: '', contentUrl: '', pdfUrl: '', duration: 30, isPublished: false, isDownloadable: true, tags: '' });
+        } catch (e) { toast.error('Failed to save lesson'); }
     };
 
     const handleDeleteLesson = async (id) => {
         if (!confirm('Delete this lesson permanently?')) return;
-        try { await fetch(`${API}/lessons/${id}`, { method: 'DELETE' }); setLessons(prev => prev.filter(l => l._id !== id)); } catch (e) { alert('Delete failed'); }
+        try { await fetch(`${API}/lessons/${id}`, { method: 'DELETE' }); setLessons(prev => prev.filter(l => l._id !== id)); toast.success('Lesson deleted'); } catch (e) { toast.error('Delete failed'); }
     };
 
     const handleTogglePublish = async (lesson) => {
@@ -237,7 +262,7 @@ export default function TeacherDashboard({ user }) {
             const res = await fetch(`${API}/lessons/${lesson._id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...lesson, isPublished: !lesson.isPublished }) });
             const updated = await res.json();
             setLessons(prev => prev.map(l => l._id === updated._id ? updated : l));
-        } catch (e) { alert('Update failed'); }
+        } catch (e) { toast.error('Update failed'); }
     };
 
     const handleEditLesson = (lesson) => {
@@ -262,7 +287,7 @@ export default function TeacherDashboard({ user }) {
             setQuizzes(prev => [newQuiz, ...prev]);
             setShowQuizBuilder(false);
             if (launchLive) launchLiveQuiz(newQuiz);
-        } catch (e) { alert('Failed to save'); }
+        } catch (e) { toast.error('Failed to save quiz'); }
     };
 
     const saveQuestion = () => {
@@ -286,13 +311,13 @@ export default function TeacherDashboard({ user }) {
 
     const handleBroadcast = () => {
         if (!announcement.title.trim() || !announcement.body.trim()) return;
-        socket.emit('class:announce', { roomId: 'class-8a', title: announcement.title, body: announcement.body, teacherName: user?.name || 'Teacher' });
+        socket.emit('class:announce', { roomId: `class-${selectedClass.standard}`, title: announcement.title, body: announcement.body, teacherName: user?.name || 'Teacher' });
         setChatMessages(prev => [...prev, { _id: `ann-${Date.now()}`, senderName: user?.name, senderRole: 'teacher', text: `📢 ${announcement.title}: ${announcement.body}`, type: 'announcement', timestamp: new Date() }]);
         setShowAnnouncement(false);
         setAnnouncement({ title: '', body: '' });
     };
 
-    const launchLiveQuiz = (quiz) => { socket.emit('quiz:start', { roomId: 'class-8a', quizId: quiz._id, quiz }); alert(`Quiz "${quiz.title}" launched to all students!`); };
+    const launchLiveQuiz = (quiz) => { socket.emit('quiz:start', { roomId: `class-${selectedClass.standard}`, quizId: quiz._id, quiz }); toast.success(`Quiz "${quiz.title}" launched to Class ${selectedClass.standard}!`); };
 
     const avgScore = students.length > 0 ? Math.round(students.reduce((a, s) => a + s.score, 0) / students.length) : 0;
     const onlineStudents = students.filter(s => s.status === 'online').length;
@@ -552,6 +577,7 @@ export default function TeacherDashboard({ user }) {
                         <p className="text-xs text-slate-400 font-semibold">Teacher Dashboard · <span className={`${isOnline ? 'text-emerald-400' : 'text-amber-400'}`}>{isOnline ? '🟢' : '🟡'}</span></p>
                     </div>
                     <div className="flex items-center gap-2 relative">
+                        <SyncStatus />
                         <button onClick={() => setShowNotifications(!showNotifications)} className="relative p-2 bg-slate-800 border border-white/10 rounded-full">
                             <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
                             {notifications.filter(n => !n.read).length > 0 && (
@@ -615,7 +641,7 @@ export default function TeacherDashboard({ user }) {
                         <div className="relative z-10">
                             <p className="text-[10px] font-extrabold uppercase tracking-widest text-violet-200 mb-1">Teacher Dashboard</p>
                             <h2 className="text-2xl font-extrabold mb-0.5">{user?.name || 'Teacher'}</h2>
-                            <p className="text-sm text-violet-200 font-medium mb-4">Mathematics · Class 8A</p>
+                            <p className="text-sm text-violet-200 font-medium mb-4">{classGroups.find(c => c.standard === selectedClass.standard)?.subject || 'Mathematics'} · Class {selectedClass.standard}</p>
                             <div className="flex divide-x divide-white/20 text-center">
                                 <div className="flex-1"><p className="text-2xl font-black">{students.length}</p><p className="text-[10px] text-violet-200 uppercase font-bold">Students</p></div>
                                 <div className="flex-1"><p className="text-2xl font-black text-emerald-300">{onlineStudents}</p><p className="text-[10px] text-violet-200 uppercase font-bold">Online</p></div>
@@ -641,7 +667,7 @@ export default function TeacherDashboard({ user }) {
                     {/* Live Class Control */}
                     {isClassLive ? (
                         <div className="bg-slate-800 rounded-2xl p-5 border border-red-500/20">
-                            <div className="flex items-center gap-2 mb-4"><span className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></span><span className="font-extrabold text-sm text-red-300">LIVE — Class 8A Mathematics</span></div>
+                            <div className="flex items-center gap-2 mb-4"><span className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></span><span className="font-extrabold text-sm text-red-300">LIVE — Class {selectedClass.standard} {classGroups.find(c => c.standard === selectedClass.standard)?.subject || 'Mathematics'}</span></div>
                             <p className="text-xs text-slate-400 font-semibold mb-4">{onlineStudents} of {students.length} students online</p>
                             <div className="flex gap-2">
                                 <button onClick={() => { if (quizzes.length > 0) launchLiveQuiz(quizzes[0]); }} className="flex-1 py-3 bg-indigo-600 rounded-xl text-xs font-bold">📊 Launch Quiz</button>
@@ -709,7 +735,7 @@ export default function TeacherDashboard({ user }) {
                             <h2 className="text-xl font-bold">My Lessons</h2>
                             <div className="flex gap-2">
                                 <button onClick={() => setShowQuizBuilder(true)} className="bg-emerald-600 text-white text-xs font-bold py-2.5 px-3 rounded-xl">+ Quiz</button>
-                                <button onClick={() => { setEditingLesson(null); setLessonForm({ title: '', subject: 'Mathematics', grade: '8', language: 'English', description: '', contentUrl: '', pdfUrl: '', duration: 30, isPublished: false, isDownloadable: true, tags: '' }); setShowLessonBuilder(true); }} className="bg-indigo-600 text-white text-xs font-bold py-2.5 px-4 rounded-xl">+ Lesson</button>
+                                <button onClick={() => { setEditingLesson(null); setLessonForm({ title: '', subject: user?.subject || 'General', standard: '8', language: 'English', description: '', contentUrl: '', pdfUrl: '', duration: 30, isPublished: false, isDownloadable: true, tags: '' }); setShowLessonBuilder(true); }} className="bg-indigo-600 text-white text-xs font-bold py-2.5 px-4 rounded-xl">+ Lesson</button>
                             </div>
                         </div>
                         <div className="space-y-3">
@@ -803,7 +829,11 @@ export default function TeacherDashboard({ user }) {
                                 <div className="h-48">
                                     <ResponsiveContainer width="100%" height="100%">
                                         <PieChart>
-                                            <Pie data={[{ name: 'Completed', value: 3 }, { name: 'In Progress', value: 2 }, { name: 'Not Started', value: Math.max(0, students.length - 5) }]} innerRadius={55} outerRadius={75} paddingAngle={5} dataKey="value">
+                                            <Pie data={[
+                                                { name: 'Completed', value: students.filter(s => s.score >= 80).length },
+                                                { name: 'In Progress', value: students.filter(s => s.score > 0 && s.score < 80).length },
+                                                { name: 'Not Started', value: students.filter(s => s.score === 0).length }
+                                            ].filter(d => d.value > 0)} innerRadius={55} outerRadius={75} paddingAngle={5} dataKey="value">
                                                 <Cell fill="#10b981" /><Cell fill="#f59e0b" /><Cell fill="#475569" />
                                             </Pie>
                                             <Tooltip contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '8px', color: '#fff', fontSize: '12px', fontWeight: 'bold' }} />
@@ -828,8 +858,10 @@ export default function TeacherDashboard({ user }) {
                                 {[0, 1, 2, 3].map(week => (
                                     <div key={week} className="grid grid-cols-7 gap-1.5 mb-1.5">
                                         {[0, 1, 2, 3, 4, 5, 6].map(day => {
-                                            const activity = Math.floor(Math.random() * students.length + 1);
-                                            const intensity = activity / students.length;
+                                            // Deterministic "activity" based on week/day and student count
+                                            const seed = (week * 7 + day + 3) * 17 % (students.length + 1);
+                                            const activity = Math.max(0, Math.min(students.length, seed));
+                                            const intensity = students.length > 0 ? activity / students.length : 0;
                                             return <div key={day} className="h-6 rounded-md flex items-center justify-center text-[8px] font-bold text-white/60" style={{ backgroundColor: `rgba(99,102,241,${0.1 + intensity * 0.7})` }} title={`${activity} students active`}>{activity}</div>;
                                         })}
                                     </div>
@@ -889,9 +921,6 @@ export default function TeacherDashboard({ user }) {
                                 onChange={(e) => {
                                     const standard = e.target.value;
                                     setSelectedClass({ standard });
-                                    // Fetch messages for this class
-                                    const roomId = `class-${standard}`;
-                                    fetch(`${API}/chat/${roomId}`).then(r => r.json()).then(setChatMessages).catch(() => {});
                                 }}
                                 className="w-full p-3 bg-slate-800 border border-white/10 rounded-xl text-white text-sm font-semibold focus:border-violet-500 outline-none"
                             >

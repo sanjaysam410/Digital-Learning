@@ -9,17 +9,21 @@ const getNotifications = async (req, res) => {
     try {
         const { role, userId, standard } = req.query;
         const filter = {};
+        const conditions = [];
+        
         // Show notifications targeted to 'all' or the user's specific role
         if (role) {
-            filter.$or = [{ targetRole: 'all' }, { targetRole: role + 's' }];
+            conditions.push({ $or: [{ targetRole: 'all' }, { targetRole: role + 's' }] });
         }
         // Filter by class/standard if provided
         if (standard) {
-            filter.$or = (filter.$or || []).concat([
-                { standard: 'ALL' },
-                { standard: standard }
-            ]);
+            conditions.push({ $or: [{ standard: 'ALL' }, { standard: standard }] });
         }
+        
+        if (conditions.length > 0) {
+            filter.$and = conditions;
+        }
+        
         const notifications = await Notification.find(filter)
             .sort({ createdAt: -1 })
             .limit(50);

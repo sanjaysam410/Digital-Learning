@@ -16,436 +16,238 @@
 
 ## 📖 About
 
-**Vidya Setu** (विद्या सहायक / ਵਿਦਿਆ ਸਹਾਇਕ) is a comprehensive digital learning platform specifically designed for rural students in Punjab (e.g., Nabha). Built with a **mobile-first, offline-first** approach, it ensures high-quality educational content is accessible even on low-end devices with limited connectivity.
-
-### 🎯 Key Features
-
-| Feature | Description |
-|---------|-------------|
-| 📱 **Student Portal** | Coursera-style mobile interface with progress tracking, interactive tests, and gamification |
-| 👨‍🏫 **Teacher Dashboard** | Class analytics, lesson assignment, real-time assessment, and live quiz management |
-| 🔄 **Real-Time Sync** | Socket.IO-powered live presence, chat, quiz, and progress updates |
-| 📴 **Offline-First** | IndexedDB storage with automatic cloud sync when connectivity returns |
-| 🌐 **PWA + Android** | Progressive Web App with optional native Android APK via Capacitor |
-| 🎥 **Video Pipeline** | Automatic video compression (FFmpeg) and cloud storage (Cloudinary) |
-| 📧 **Email Notifications** | OTP verification and notifications via Nodemailer |
+**Vidya Setu** (विद्या सहायक / ਵਿਦਿਆ ਸਹਾਇਕ) is a comprehensive digital learning platform specifically designed for rural students in Punjab (e.g., Nabha). Developed as a solution for **SIH2025 (Problem Statement ID: SIH25019)**, it is built with a **mobile-first, offline-first** approach. The platform ensures that high-quality educational content, **digital literacy modules**, real-time collaboration, and assessments are accessible even on low-end devices with intermittent or limited internet connectivity.
 
 ---
 
-## 🛠 Tech Stack
+## ✨ Key Features
+
+- **Offline-First Workflow**: Uses IndexedDB to store lessons, quizzes, and progress locally. User actions are queued while offline and automatically synchronized when connectivity returns.
+- **Real-Time Collaboration**: Socket.IO powered live presence, real-time chat, live quizzes, and synchronized teacher-student dashboards equipped with **data-driven instructional analytics**.
+- **Automated Video Pipeline**: Teachers can upload heavy raw videos which are automatically queued, compressed using FFmpeg (shrinking media by **up to 80%** to 480p, optimized for 2G/3G mobile networks), and uploaded to Cloudinary.
+- **Dual Authentication System**: Secure login using standard email/password (JWT) paired with an OTP verification system using Nodemailer and optional Firebase Auth.
+- **Cross-Platform Delivery**: Functions as a Progressive Web App (PWA) in browsers and can be compiled into a native Android APK using Capacitor.
+- **Interactive Assessments**: Real-time live quizzes and offline assignments with automated grading and progress tracking.
+
+---
+
+## 🛠 Technology Stack & Tools
 
 ### Frontend
-- **Framework**: React 18.3.1 with Vite 7.x
-- **Styling**: Tailwind CSS 3.x (mobile-first responsive design)
-- **PWA**: vite-plugin-pwa with Workbox for offline caching
-- **State**: IndexedDB (via `idb`) for offline data storage
-- **Real-time**: Socket.IO Client 4.x
-- **HTTP**: Axios 1.x with JWT authentication
-- **Charts**: Recharts 3.x for teacher analytics
-- **Media**: React Player 3.x for video lessons
-- **Icons**: Lucide React
-- **Mobile**: Capacitor 8.x for Android APK
+- **Framework**: React 18.3.1 bootstrapped with Vite 7.x
+- **Styling**: Tailwind CSS 3.x (Mobile-first responsive design)
+- **Offline Storage**: IndexedDB (via `idb` 8.x) for offline caching of media, progress, and sync queues
+- **PWA Capabilities**: `vite-plugin-pwa` with Workbox for advanced Service Worker strategies (Network First, Cache First, Stale While Revalidate)
+- **Real-Time Communication**: `socket.io-client` 4.x
+- **Media Playback**: `react-player` for lazy-loaded video lessons
+- **Data Visualization**: `recharts` for teacher analytics and student progress charts
+- **Mobile Wrapper**: Capacitor 8.x (`@capacitor/android`, `@capacitor/network`) for native Android APK generation
 
 ### Backend
-- **Runtime**: Node.js 23.x
-- **Framework**: Express 4.x
-- **Database**: MongoDB Atlas with Mongoose 8.x
-- **Real-time**: Socket.IO 4.x
-- **Auth**: JWT (jsonwebtoken) + bcryptjs
-- **File Upload**: Multer 2.x
-- **Video Processing**: fluent-ffmpeg + better-queue
-- **Cloud Storage**: Cloudinary 2.x
-- **Email**: Nodemailer 8.x
+- **Runtime Environment**: Node.js (v20+ / v23.x tested)
+- **Web Framework**: Express 4.x
+- **Real-Time Server**: Socket.IO 4.x
+- **Database**: MongoDB Atlas with Mongoose 8.x ODM
+- **Authentication**: JWT (`jsonwebtoken`), `bcryptjs`, and Firebase Admin SDK (`firebase-admin`)
+- **Email/OTP Delivery**: Nodemailer 8.x
+- **File Uploads**: Multer 2.x (for initial raw file handling)
+- **Video Processing**: `fluent-ffmpeg` paired with `better-queue` for asynchronous, non-blocking media compression
+- **Cloud Storage**: Cloudinary 2.x API for hosting compressed videos and PDFs
 
 ---
 
-## 🚀 Quick Start
+## 🏗 Architecture & Core Concepts
+
+### 1. Edge-to-Cloud Synchronized Ecosystem
+Vidya Setu operates on a rigorously modeled 3-tier offline sync architecture:
+- **Tier 1 (Edge/Device)**: IndexedDB acts as the local source of truth. It stores downloaded lessons, user profiles, and queues actions (like quiz submissions or progress updates) when offline.
+- **Tier 2 (Background Sync)**: A Service Worker intercepts requests. When connectivity drops, requests are saved to a Sync Queue. A robust network check (pinging the backend + Capacitor Network plugin) detects reconnection to trigger a `flushQueue()` operation.
+- **Tier 3 (Cloud)**: MongoDB Atlas serves as the authoritative remote store. The backend is rigidly structured into distinct modular entities (`School`, `User`, `Lesson`, `Progress`, `Quiz`, `Message`) to maintain data integrity and resolve conflicts gracefully (e.g., keeping the highest progress percentage).
+
+### 2. Video Upload & Compression Pipeline
+To accommodate low-bandwidth areas, teacher-uploaded videos undergo an automated pipeline:
+1. File uploaded via `POST /api/upload` (Multer saves raw file locally).
+2. `better-queue` adds the job to a processing queue.
+3. `fluent-ffmpeg` scales the video to 480p (libx264, CRF 28, AAC 64k) and applies `faststart` for web streaming.
+4. The compressed file is pushed to Cloudinary.
+5. Local temp files are deleted, and a real-time Socket event (`video:compressed`) notifies the teacher's dashboard.
+
+### 3. Client-Server Real-Time Architecture
+A single Node.js Express server is augmented with a Socket.IO instance to handle rooms (classes). Features include:
+- **Presence**: `join_class` events track active users and update online counts.
+- **Chat**: Real-time chat with typing indicators and teacher controls (mute all, delete, pin).
+- **Live Quizzes**: Teachers push `quiz:start` events, and students respond with `quiz:answer`.
+
+### 4. PWA Caching Strategies
+The Service Worker utilizes multiple Workbox strategies:
+- **Network First**: For API routes (`/api/lessons`, `/api/users`) to ensure fresh data, with cache fallback.
+- **Cache First**: For heavy media (MP4, PDF) using `RangeRequestsPlugin`.
+- **Stale While Revalidate**: For static assets, fonts, and icons.
+
+---
+
+## 🚀 Getting Started
 
 ### Prerequisites
-
-Ensure you have the following installed:
-
-```bash
-# Check versions
-node --version    # v20 or higher (v23.2.0 tested)
-npm --version     # v9 or higher
-```
-
-**Optional (for video compression):**
-```bash
-# macOS
-brew install ffmpeg
-
-# Windows
-# Download from https://ffmpeg.org/download.html
-
-# Linux
-sudo apt-get install ffmpeg
-```
+- **Node.js**: v20 or higher
+- **npm**: v9 or higher
+- **MongoDB**: Access to a MongoDB instance (e.g., Atlas)
+- **FFmpeg**: Must be installed on the host machine for video processing.
+  - *macOS*: `brew install ffmpeg`
+  - *Linux*: `sudo apt-get install ffmpeg`
+  - *Windows*: Download from the official FFmpeg site.
 
 ### 1. Clone the Repository
-
 ```bash
 git clone <repository-url>
 cd digital-learning-platform
 ```
 
 ### 2. Backend Setup
-
 ```bash
-# Navigate to backend directory
 cd backend
-
-# Install dependencies
 npm install
 
-# Create .env file (see Environment Variables section)
-cp .env.example .env  # or create manually
+# Create environment variables file
+cp .env.example .env # Or manually create .env
 
-# Start development server
+# Start the development server (runs on port 5001)
 npm run dev
 ```
-
-Backend will run on **http://localhost:5000**
 
 ### 3. Frontend Setup
-
 ```bash
-# Open new terminal, navigate to frontend
+# Open a new terminal
 cd frontend
-
-# Install dependencies
 npm install
 
-# Create .env file (see Environment Variables section)
-cp .env.example .env  # or create manually
-
-# Start development server
+# Start the Vite development server (runs on port 5173)
 npm run dev
 ```
-
-Frontend will run on **http://localhost:5173**
 
 ---
 
 ## ⚙️ Environment Variables
 
-### Backend (.env in `/backend`)
-
+### Backend (`/backend/.env`)
 ```env
-# Database Configuration
-MONGODB_URI=mongodb+srv://<username>:<password>@cluster.mongodb.net/Vidya Setu
-
-# JWT Secret (generate a strong random string)
-JWT_SECRET=your_super_secret_jwt_key_change_this
-
-# Cloudinary Configuration (for media storage)
-CLOUDINARY_CLOUD_NAME=your-cloud-name
-CLOUDINARY_API_KEY=your-api-key
-CLOUDINARY_API_SECRET=your-api-secret
-
-# Server Configuration
-PORT=5001
 NODE_ENV=development
+PORT=5001
+MONGO_URI=mongodb+srv://<user>:<password>@cluster.mongodb.net/VidyaSetu
+JWT_SECRET=your_super_secret_jwt_key
 
-# Firebase Admin SDK (Optional - for Firebase user management)
-# Get from: https://console.firebase.google.com > Project Settings > Service Accounts
+# Cloudinary (Media Storage)
+CLOUDINARY_CLOUD_NAME=your_cloud_name
+CLOUDINARY_API_KEY=your_api_key
+CLOUDINARY_API_SECRET=your_api_secret
+
+# Email (Nodemailer - Gmail App Password recommended)
+EMAIL_USER=your_email@gmail.com
+EMAIL_PASS=your_app_password
+
+# Firebase Admin SDK (Optional - for enhanced auth)
 FIREBASE_PROJECT_ID=your-project-id
-FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxxxx@your-project.iam.gserviceaccount.com
+FIREBASE_CLIENT_EMAIL=your-service-account-email
 FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n..."
 ```
 
-> ⚠️ **Note**: Firebase is **OPTIONAL**. Your app works without it using backend OTP + MongoDB. See `FIREBASE_CREDENTIALS.md` for setup guide.
-
-### Email Delivery (Optional - for production)
-
-Currently OTPs are logged to console. For email delivery in production:
-
+### Frontend (`/frontend/.env`)
+*No mandatory environment variables are required out of the box as it uses a dynamic configuration `config.js` that points to `http://localhost:5001` during local dev, but you can override:*
 ```env
-# Resend API (Recommended - Free 100 emails/day)
-# Get from: https://resend.com/api-keys
-RESEND_API_KEY=re_xxxxx
+VITE_API_URL=http://localhost:5001/api
+VITE_SOCKET_URL=http://localhost:5001
 ```
-
-### Frontend (.env in `/frontend`)
-
-```env
-# Backend API URL
-VITE_API_URL=http://localhost:5000/api
-
-# Socket.IO Server URL
-VITE_SOCKET_URL=http://localhost:5000
-
-# App Configuration
-VITE_APP_NAME=Vidya Setu
-```
-
-> ⚠️ **Security Note**: Never commit `.env` files to version control. They are excluded via `.gitignore`.
 
 ---
 
 ## 📱 Building for Android
+
+Vidya Setu utilizes **Capacitor** to wrap the PWA into a native Android application.
 
 ### Prerequisites
 - Android Studio (Arctic Fox or higher)
 - Android SDK (API level 21+)
 
 ### Build Steps
-
 ```bash
 cd frontend
 
-# Build production bundle
+# Build the production React bundle
 npm run build
 
-# Sync with Capacitor
+# Sync web assets with Capacitor Android project
 npx cap sync android
 
-# Open in Android Studio
+# Open project in Android Studio to build APK
 npx cap open android
 ```
-
-In Android Studio:
-1. Wait for Gradle sync to complete
-2. Select **Build → Build Bundle(s) / APK(s) → Build APK(s)**
-3. Find APK in `frontend/android/app/build/outputs/apk/`
-
----
-
-## 🏗️ Architecture
-
-### Edge-to-Cloud Synchronization
-
-```
-┌─────────────────┐         ┌─────────────────┐         ┌─────────────────┐
-│   Student/      │         │   Node.js +     │         │   MongoDB       │
-│   Teacher       │◄───────►│   Express +     │◄───────►│   Atlas         │
-│   Device        │  REST/  │   Socket.IO     │  Cloud  │   (Cloud)       │
-│   (Edge)        │  WS     │   (Server)      │         │                 │
-│   IndexedDB     │         │                 │         │   Cloudinary    │
-└─────────────────┘         └─────────────────┘         └─────────────────┘
-       │                           │                           │
-       │  Offline: Queue actions   │                           │
-       │  Online: Sync to cloud    │                           │
-       └───────────────────────────┴───────────────────────────┘
-```
-
-### Offline-First Workflow
-
-1. **Offline**: Data stored in IndexedDB, actions queued
-2. **Reconnect**: Service Worker detects online status
-3. **Sync**: Queued actions replayed to cloud API
-4. **Conflict Resolution**: Smart merge (e.g., higher progress wins)
+*In Android Studio: Wait for Gradle sync, then go to `Build` → `Build Bundle(s) / APK(s)` → `Build APK(s)`.*
 
 ---
 
 ## 📂 Project Structure
 
-```
+```text
 digital-learning-platform/
 ├── backend/
-│   ├── controllers/          # Request handlers (auth, lessons, users)
-│   ├── models/               # MongoDB schemas (User, Lesson, Progress)
-│   ├── routes/               # API route definitions
-│   ├── services/             # Business logic (video compression, email)
-│   ├── middleware/           # Auth, error handling, CORS
-│   ├── .env                  # Environment variables (gitignored)
-│   ├── server.js             # Entry point
-│   └── package.json
+│   ├── config/             # DB & Firebase configuration
+│   ├── controllers/        # Request handlers (User, Lesson, Quiz, Chat)
+│   ├── middleware/         # JWT Auth & Role-based access control
+│   ├── models/             # Mongoose schemas (User, Lesson, Progress, OTP, etc.)
+│   ├── routes/             # Express API routes
+│   ├── services/           # better-queue & ffmpeg video compressor service
+│   ├── server.js           # Express & Socket.IO entry point
+│   └── public/uploads/     # Temp storage for raw/compressed files
 │
 ├── frontend/
+│   ├── android/            # Capacitor Android native project
 │   ├── src/
-│   │   ├── components/       # Reusable React components
-│   │   ├── pages/            # Page components (Student, Teacher)
-│   │   ├── services/         # API services (axios, socket)
-│   │   ├── offline/          # IndexedDB, sync queue, service worker
-│   │   ├── context/          # React context (auth, socket)
-│   │   └── App.jsx           # Root component
-│   ├── public/               # Static assets (icons, manifest)
-│   ├── .env                  # Environment variables (gitignored)
-│   └── package.json
+│   │   ├── components/     # UI Components (AdminPanel, StudentPortal, TeacherDashboard)
+│   │   ├── context/        # React Context (SyncContext for network state)
+│   │   ├── offline/        # IndexedDB logic (syncQueue.js, videoCache.js)
+│   │   ├── App.jsx         # Root Router & Auth check
+│   │   ├── config.js       # Dynamic API URL resolution
+│   │   ├── socket.js       # Socket.IO client singleton
+│   │   └── sw.js           # Custom Workbox Service Worker logic
+│   ├── capacitor.config.json # Capacitor configuration
+│   └── vite.config.js      # Vite & PWA configuration
 │
-├── nabha/                    # Project specifications (SIH2025)
-├── diagrams/                 # Architecture diagrams
-├── requirements.txt          # Detailed requirements document
-├── PROJECT_DOCUMENTATION.md  # Comprehensive technical docs
-└── README.md                 # This file
+└── PROJECT_DOCUMENTATION.md # Detailed system design docs
 ```
 
 ---
 
-## 🎓 User Roles
+## 🎓 User Roles & Workflows
 
 ### 👨‍🎓 Students
-- Browse and access assigned lessons
-- Watch video lessons (online/offline)
-- Take quizzes and submit answers
-- Track personal progress
-- Earn badges and gamification points
-- Participate in live class chat
+- **Dashboard**: Access assigned lessons based on their standard/grade.
+- **Offline Learning**: Download video lessons and PDFs for offline viewing.
+- **Assessments**: Take quizzes; results are queued offline and synced when online.
+- **Gamification**: Earn badges and points for completing lessons and quizzes.
 
 ### 👨‍🏫 Teachers
-- Create and upload lessons (video, PDF)
-- Assign lessons to classes
-- Monitor real-time student progress
-- Conduct live quizzes
-- View class analytics and performance charts
-- Manage class chat (pin, mute, delete)
+- **Content Creation**: Upload videos/PDFs to create rich lessons.
+- **Live Classes**: Start live sessions, manage real-time chat, and broadcast announcements.
+- **Live Quizzes**: Push quizzes to connected students in real-time.
+- **Analytics**: View student progress and quiz performance charts.
 
-### 👤 Admin
-- Manage users (students, teachers)
-- Configure platform settings
-- View platform-wide analytics
-
----
-
-## 🔌 API Endpoints
-
-### Authentication
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/users/verify-email` | Verify email format & availability |
-| POST | `/api/users/send-otp` | Send OTP to email |
-| POST | `/api/users/verify-otp` | Verify OTP code |
-| POST | `/api/users/register` | Register with OTP verification |
-| POST | `/api/users/login` | Login with credentials |
-
-### Users
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/users/profile` | Get user profile |
-| PUT | `/api/users/profile` | Update profile |
-| GET | `/api/users/:id` | Get user by ID |
-
-### Lessons
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/lessons` | Get all lessons |
-| GET | `/api/lessons/:id` | Get lesson by ID |
-| POST | `/api/lessons` | Create lesson (teacher) |
-| PUT | `/api/lessons/:id` | Update lesson |
-| DELETE | `/api/lessons/:id` | Delete lesson |
-
-### Progress
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/progress` | Update progress |
-| GET | `/api/progress/:userId` | Get user progress |
-
-### Upload
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/upload` | Upload file (video/PDF) |
-| GET | `/api/upload/status/:filename` | Check compression status |
-
----
-
-## 🧪 Testing
-
-### Backend Tests
-```bash
-cd backend
-npm test
-```
-
-### Frontend Tests
-```bash
-cd frontend
-npm test
-```
+### 👤 Admins
+- Manage school registrations, users (teachers/students), and platform-wide configurations.
 
 ---
 
 ## 🐛 Troubleshooting
 
-### Common Issues
-
-**1. Module not found errors**
-```bash
-# Clear cache and reinstall
-rm -rf node_modules package-lock.json
-npm install
-```
-
-**2. MongoDB connection failed**
-- Verify MongoDB URI in `.env`
-- Check network access in MongoDB Atlas
-- Add your IP to whitelist
-
-**3. FFmpeg not found**
-```bash
-# Verify installation
-ffmpeg -version
-
-# macOS: brew install ffmpeg
-# Linux: sudo apt-get install ffmpeg
-```
-
-**4. Port already in use**
-```bash
-# Find process using port 5000
-lsof -i :5000
-
-# Kill process
-kill -9 <PID>
-
-# Or change PORT in backend/.env
-```
-
-**5. CORS errors**
-- Ensure `FRONTEND_URL` in backend/.env matches frontend dev server
-- Check frontend is running on expected port
-
-**6. Email (Nodemailer) not sending**
-- Use app-specific password for Gmail (not regular password)
-- Enable "Less secure app access" or use OAuth2
-- Verify SMTP settings in `.env`
-
----
-
-## 📚 Documentation
-
-- **[PROJECT_DOCUMENTATION.md](./PROJECT_DOCUMENTATION.md)** - Comprehensive technical documentation
-- **[requirements.txt](./requirements.txt)** - Detailed requirements and setup guide
-- **`/nabha/`** - SIH2025 project specifications
-
----
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit changes (`git commit -m 'Add AmazingFeature'`)
-4. Push to branch (`git push origin feature/AmazingFeature`)
-5. Open Pull Request
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License.
-
----
-
-## 👥 Team
-
-**SIH2025 - Problem Statement ID: SIH25019**
-Matrusri Engineering College, Team 3
-
----
-
-## 🙏 Acknowledgments
-
-- Rural students and teachers in Nabha, Punjab
-- SIH2025 organizers
-- Open-source community
+1. **MongoDB Connection Fails**: Ensure your current IP is whitelisted in MongoDB Atlas Network Access settings. The server employs auto-retry logic every 10 seconds if it fails initially.
+2. **Video Upload Stalls**: Ensure `ffmpeg` is globally installed and accessible in your system's PATH. Check the backend console for `[videoCompressor]` logs.
+3. **Emails/OTPs Not Sending**: If using Gmail for Nodemailer, ensure you have generated an **App Password** (standard account passwords will not work).
+4. **Android Build Network Issues**: The `capacitor.config.json` allows cleartext traffic for local testing. If pointing to a production server, ensure you are using `https://`.
 
 ---
 
 <div align="center">
 
-**Built with ❤️ for rural education in India**
-
+**Built with ❤️ for rural education in India**  
 🌐 **Vidya Setu** - Bridging the digital divide in education
 
 </div>
